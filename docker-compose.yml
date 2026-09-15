@@ -1,0 +1,110 @@
+# Backend du site H-Company (API + base de données + cache). Ce fichier
+# n'est jamais lancé seul directement : il est `include`d par le
+# docker-compose.yml à la racine de hcompany/, pour ne pas dupliquer la
+# définition de ces services entre les deux fichiers.
+#
+# Ce backend ne sert plus que le site H-Company — H-learning et la
+# plateforme mobile/desktop ont désormais chacun leur propre backend
+# indépendant (voir ../../h-learning/backend/ et ../../platform/backend/).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hcompany}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hcompany}
+      POSTGRES_DB: ${POSTGRES_DB:-hcompany}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5442:5432"
+    networks:
+      - hcompany
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hcompany}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  # Sauvegarde automatique de la base — dump quotidien à 3h du matin,
+  # rotation 7 jours / 4 semaines / 6 mois. Aucune configuration
+  # supplémentaire nécessaire ; les fichiers .sql.gz s'accumulent dans le
+  # volume `db_backups` (voir README pour la procédure de restauration).
+  db-backup:
+    image: prodrigestivill/postgres-backup-local:16-alpine
+    restart: unless-stopped
+    networks:
+      - hcompany
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_USER: ${POSTGRES_USER:-hcompany}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hcompany}
+      POSTGRES_DB: ${POSTGRES_DB:-hcompany}
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - db_backups:/backups
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    networks:
+      - hcompany
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Surcharge : force l'usage de Postgres/Redis du réseau docker-compose,
+      # même si .env contient encore des valeurs locales (sqlite, etc.).
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-hcompany}:${POSTGRES_PASSWORD:-hcompany}@db:5432/${POSTGRES_DB:-hcompany}
+      REDIS_URL: redis://redis:6379/0
+      # Le service auth/ tourne dans un projet Docker Compose SÉPARÉ (réseau
+      # différent) — "localhost" depuis l'intérieur de CE conteneur pointe
+      # sur lui-même, jamais sur la machine hôte. `host.docker.internal`
+      # est le nom spécial qui permet d'atteindre l'hôte depuis un
+      # conteneur ; `extra_hosts` ci-dessous le active aussi sur Linux (pas
+      # seulement Mac/Windows où c'est automatique).
+      AUTH_SERVICE_URL: http://host.docker.internal:8003
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - hcompany
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+networks:
+  # Réseau nommé explicitement — plutôt que de compter sur le réseau par
+  # défaut que Docker Compose crée automatiquement, qui semble mal se
+  # comporter combiné au mot-clé `include:` sur certaines configurations
+  # (des services se retrouvant sans réseau attribué du tout). En le
+  # déclarant ici et en l'attribuant explicitement à chaque service (y
+  # compris ceux du fichier racine qui inclut celui-ci), l'ambiguïté disparaît.
+  hcompany:
+
+volumes:
+  pgdata:
+  redisdata:
+  db_backups:
