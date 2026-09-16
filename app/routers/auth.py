@@ -46,7 +46,13 @@ def _call_auth_service(method: str, path: str, **kwargs) -> dict:
     fonction pour traduire ses erreurs en HTTPException FastAPI, et gérer
     le cas où le service est injoignable sans faire planter cette API."""
     try:
-        with httpx.Client(timeout=10) as client:
+        # 45s plutôt que 10s : sur un hébergeur gratuit (Render, etc.), le
+        # service auth peut être en veille et mettre jusqu'à 30-60s à se
+        # réveiller au premier appel après une période d'inactivité — un
+        # délai de 10s abandonnait avant même que la requête n'arrive,
+        # renvoyant un 503 alors que le service était simplement en train
+        # de démarrer.
+        with httpx.Client(timeout=45) as client:
             resp = client.request(method, f"{AUTH_SERVICE}{path}", **kwargs)
     except httpx.RequestError:
         raise HTTPException(
