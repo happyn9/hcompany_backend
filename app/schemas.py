@@ -71,9 +71,10 @@ class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserRead
-    # Rempli uniquement pour les clients mobile/desktop (voir en-tête
-    # X-Client-Type dans routers/auth.py) — les clients web utilisent le
-    # cookie httpOnly à la place, jamais ce champ.
+    # Toujours rempli, web comme mobile/desktop — les navigateurs modernes
+    # bloquent de plus en plus les cookies tiers entre domaines différents
+    # (constaté en production avec Vercel + Render), le corps JSON est
+    # devenu la source fiable pour tous les clients, pas seulement mobile.
     refresh_token: Optional[str] = None
 
 

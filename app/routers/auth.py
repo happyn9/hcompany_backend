@@ -34,6 +34,14 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         secure=settings.cookie_secure,
+        # "none" et non "lax" — le site (Vercel) et l'API (Render) vivent
+        # sur deux domaines réellement distincts en production, pas juste
+        # deux ports locaux comme en développement. Avec "lax", le
+        # navigateur refuse d'envoyer ce cookie sur les appels du site vers
+        # l'API (considérés "cross-site"), ce qui invalidait la session à
+        # chaque actualisation de page — jamais vu en local où site et API
+        # partagent le même domaine (localhost). "none" exige "Secure=true"
+        # (voir COOKIE_SECURE), déjà en place en production.
         samesite="none" if settings.cookie_secure else "lax",
         domain=settings.cookie_domain,
         max_age=settings.refresh_token_expire_days * 24 * 3600,
@@ -85,12 +93,16 @@ def _is_mobile_client(request: Request) -> bool:
 
 def _issue_tokens_from_central(request: Request, response: Response, session: Session, central: dict) -> AccessTokenResponse:
     """Reçoit la réponse du service central (access_token, refresh_token,
-    user central) et la traduit en réponse locale : le jeton de
-    rafraîchissement part dans le cookie httpOnly pour un client web, ou
-    directement dans le corps JSON pour l'app mobile/desktop (voir
-    _is_mobile_client). Le profil utilisateur renvoyé est le profil LOCAL
-    enrichi (rôle, statut de compte...), pas le profil minimal du service
-    central."""
+    user central) et la traduit en réponse locale. Le jeton de
+    rafraîchissement est désormais toujours inclus dans le corps JSON, pas
+    seulement pour les clients mobile/desktop : les navigateurs modernes
+    (Chrome en tête) bloquent de plus en plus les cookies tiers, même
+    correctement réglés en SameSite=None; Secure, dès que le site et l'API
+    vivent sur deux domaines différents (Vercel + Render, notamment) —
+    constaté concrètement en production, pas juste en théorie. Le cookie
+    reste posé en plus (inoffensif, redevient utile le jour où site et API
+    partagent un même domaine), mais le site s'appuie maintenant sur le
+    corps JSON comme source fiable, exactement comme l'app mobile déjà."""
     is_mobile = _is_mobile_client(request)
     if not is_mobile:
         _set_refresh_cookie(response, central["refresh_token"])
@@ -98,7 +110,7 @@ def _issue_tokens_from_central(request: Request, response: Response, session: Se
     return AccessTokenResponse(
         access_token=central["access_token"],
         user=local_user,
-        refresh_token=central["refresh_token"] if is_mobile else None,
+        refresh_token=central["refresh_token"],
     )
 
 
