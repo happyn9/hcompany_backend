@@ -268,4 +268,8 @@ def oauth_complete(response: Response, payload: OAuthCompletePayload, session: S
         raise HTTPException(status_code=403, detail="Ce compte est désactivé.")
 
     _set_refresh_cookie(response, payload.refresh_token)
-    return AccessTokenResponse(access_token=payload.access_token, user=local_user)
+    return AccessTokenResponse(
+      access_token=payload.access_token,
+      user=local_user,
+      refresh_token=payload.refresh_token,
+    )
