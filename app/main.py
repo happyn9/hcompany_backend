@@ -15,7 +15,7 @@ from app.config import settings
 from app.database import engine
 from app.middleware import SecurityHeadersMiddleware
 from app.models import Course, Product, User, UserRole
-from app.routers import auth, partners, learning, products, contact, onboarding, notifications
+from app.routers import auth, partners, learning, products, contact, onboarding, notifications, services
 from app.lukondo.routers import parcels as lukondo_parcels
 from app.lukondo.routers import rooms as lukondo_rooms
 from app.lukondo.routers import bus as lukondo_bus
@@ -170,6 +170,7 @@ app.include_router(products.router)
 app.include_router(contact.router)
 app.include_router(onboarding.router)
 app.include_router(notifications.router)
+app.include_router(services.router)
 app.include_router(lukondo_parcels.router)
 app.include_router(lukondo_rooms.router)
 app.include_router(lukondo_bus.router)

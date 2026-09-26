@@ -266,6 +266,44 @@ class Notification(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# --- Abonnements clients aux services H-Company ---
+# (H-Transport, H-Restaurant, H-Learning, H-Money, H-Translate, H-Shopping...)
+# Distinct de PartnerApp : ici c'est le CLIENT final qui demande à utiliser
+# un service, pas un partenaire qui l'exploite sur la marketplace.
+
+class ServiceKey(str, Enum):
+    h_transport_bus = "h_transport_bus"
+    h_transport_colis = "h_transport_colis"
+    h_logement = "h_logement"
+    h_restaurant = "h_restaurant"
+    h_learning = "h_learning"
+    h_money = "h_money"  # transfert d'argent — pas encore disponible
+    h_translate = "h_translate"
+    h_shopping = "h_shopping"
+
+
+class SubscriptionStatus(str, Enum):
+    requested = "requested"  # demandée par le client, en attente d'admin
+    active = "active"
+    suspended = "suspended"
+    rejected = "rejected"
+
+
+class ServiceSubscription(SQLModel, table=True):
+    """Demande d'un utilisateur pour s'abonner à un service H-Company. Une
+    fois approuvée par un admin, le service apparaît comme actif dans son
+    tableau de bord."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    service_key: ServiceKey
+    message: Optional[str] = None
+    status: SubscriptionStatus = Field(default=SubscriptionStatus.requested)
+    admin_note: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    reviewed_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+
+
 # --- Contact ---
 
 class ContactStatus(str, Enum):

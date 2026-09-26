@@ -3,7 +3,19 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.models import AccountStatus, ActivityCategory, AppStatus, ContractStatus, OfferStatus, OTPChannel, OTPPurpose, PartnerStatus, PaymentMode
+from app.models import (
+    AccountStatus,
+    ActivityCategory,
+    AppStatus,
+    ContractStatus,
+    OfferStatus,
+    OTPChannel,
+    OTPPurpose,
+    PartnerStatus,
+    PaymentMode,
+    ServiceKey,
+    SubscriptionStatus,
+)
 
 
 # --- Auth ---
@@ -321,6 +333,44 @@ class BillingSummary(BaseModel):
     total_owed: float
     apps_count: int
     active_apps_count: int
+
+
+# --- Abonnements clients aux services H-Company ---
+
+class ServiceSubscriptionCreate(BaseModel):
+    service_key: ServiceKey
+    message: Optional[str] = None
+
+
+class ServiceSubscriptionStatusUpdate(BaseModel):
+    status: SubscriptionStatus
+    admin_note: Optional[str] = None
+
+
+class ServiceSubscriptionRead(BaseModel):
+    id: int
+    service_key: ServiceKey
+    message: Optional[str] = None
+    status: SubscriptionStatus
+    admin_note: Optional[str] = None
+    created_at: datetime
+    reviewed_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ServiceSubscriptionAdminRead(ServiceSubscriptionRead):
+    user_id: int
+    user_full_name: Optional[str] = None
+    user_email: Optional[str] = None
+
+
+class MyServicesSummary(BaseModel):
+    active_count: int
+    total_count: int
+    subscriptions: list[ServiceSubscriptionRead] = []
 
 
 # --- Notifications (in-app + push) ---
