@@ -13,7 +13,6 @@ from app.models import (
     OTPPurpose,
     PartnerStatus,
     PaymentMode,
-    ServiceKey,
     SubscriptionStatus,
 )
 
@@ -335,10 +334,46 @@ class BillingSummary(BaseModel):
     active_apps_count: int
 
 
+# --- Catalogue des services H-Company (gérable depuis l'admin) ---
+
+class ServiceCatalogItemCreate(BaseModel):
+    key: str
+    label_fr: str
+    label_en: str
+    description_fr: str = ""
+    description_en: str = ""
+    disabled: bool = False
+    sort_order: int = 0
+
+
+class ServiceCatalogItemUpdate(BaseModel):
+    label_fr: Optional[str] = None
+    label_en: Optional[str] = None
+    description_fr: Optional[str] = None
+    description_en: Optional[str] = None
+    disabled: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class ServiceCatalogItemRead(BaseModel):
+    id: int
+    key: str
+    label_fr: str
+    label_en: str
+    description_fr: str = ""
+    description_en: str = ""
+    logo_url: Optional[str] = None
+    disabled: bool
+    sort_order: int
+
+    class Config:
+        from_attributes = True
+
+
 # --- Abonnements clients aux services H-Company ---
 
 class ServiceSubscriptionCreate(BaseModel):
-    service_key: ServiceKey
+    service_key: str
     message: Optional[str] = None
 
 
@@ -349,7 +384,7 @@ class ServiceSubscriptionStatusUpdate(BaseModel):
 
 class ServiceSubscriptionRead(BaseModel):
     id: int
-    service_key: ServiceKey
+    service_key: str
     message: Optional[str] = None
     status: SubscriptionStatus
     admin_note: Optional[str] = None

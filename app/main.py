@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import sentry_sdk
@@ -7,6 +8,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlmodel import Session, select
@@ -162,6 +164,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": "Données invalides.", "errors": exc.errors()},
     )
 
+
+# Fichiers statiques uploadés (logos de services, etc.) — le dossier est
+# créé au chargement de app.routers.services s'il n'existe pas encore.
+UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(auth.router)
 app.include_router(partners.router)

@@ -271,22 +271,35 @@ class Notification(SQLModel, table=True):
 # Distinct de PartnerApp : ici c'est le CLIENT final qui demande à utiliser
 # un service, pas un partenaire qui l'exploite sur la marketplace.
 
-class ServiceKey(str, Enum):
-    h_transport_bus = "h_transport_bus"
-    h_transport_colis = "h_transport_colis"
-    h_logement = "h_logement"
-    h_restaurant = "h_restaurant"
-    h_learning = "h_learning"
-    h_money = "h_money"  # transfert d'argent — pas encore disponible
-    h_translate = "h_translate"
-    h_shopping = "h_shopping"
-
-
 class SubscriptionStatus(str, Enum):
     requested = "requested"  # demandée par le client, en attente d'admin
     active = "active"
     suspended = "suspended"
     rejected = "rejected"
+
+
+class ServiceCatalogItem(SQLModel, table=True):
+    """Catalogue des services H-Company proposés aux clients (H-Transport,
+    H-Restaurant, H-Learning...) — gérable depuis l'admin (libellés FR/EN,
+    description, logo, activation, ordre d'affichage). Remplace l'ancien
+    catalogue codé en dur dans routers/services.py. `key` est une chaîne
+    libre (pas un enum fermé) pour que l'admin puisse ajouter de nouveaux
+    services sans migration ; ServiceSubscription.service_key y fait
+    référence de façon souple (même convention que partner_code sur User)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(unique=True, index=True)
+    label_fr: str
+    label_en: str
+    description_fr: str = ""
+    description_en: str = ""
+    # Chemin relatif servi en statique par le backend, ex:
+    # "service-logos/h_restaurant.svg" — voir app/main.py pour le montage
+    # StaticFiles et routers/services.py pour l'upload admin.
+    logo_path: Optional[str] = None
+    disabled: bool = Field(default=False)
+    sort_order: int = Field(default=0)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class ServiceSubscription(SQLModel, table=True):
@@ -295,7 +308,9 @@ class ServiceSubscription(SQLModel, table=True):
     tableau de bord."""
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
-    service_key: ServiceKey
+    # Référence souple à ServiceCatalogItem.key (chaîne libre, plus un enum
+    # fermé) — voir ServiceCatalogItem ci-dessus.
+    service_key: str = Field(index=True)
     message: Optional[str] = None
     status: SubscriptionStatus = Field(default=SubscriptionStatus.requested)
     admin_note: Optional[str] = None
