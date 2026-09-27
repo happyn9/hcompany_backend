@@ -25,11 +25,20 @@ def send_email(to: str, subject: str, body: str) -> None:
     msg["From"] = settings.smtp_from
     msg["To"] = to
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
-        server.starttls()
-        if settings.smtp_user:
-            server.login(settings.smtp_user, settings.smtp_password or "")
-        server.sendmail(settings.smtp_from, [to], msg.as_string())
+    try:
+        # timeout impératif : sans lui, un serveur SMTP injoignable ou lent
+        # bloque le thread indéfiniment. Les appelants font ceci après avoir
+        # committé leur transaction DB, mais un blocage ici reste un thread
+        # gaspillé — mieux vaut échouer vite.
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            server.starttls()
+            if settings.smtp_user:
+                server.login(settings.smtp_user, settings.smtp_password or "")
+            server.sendmail(settings.smtp_from, [to], msg.as_string())
+    except (smtplib.SMTPException, OSError):
+        # Une notification qui échoue ne doit jamais faire échouer la requête
+        # dont le travail (DB) est déjà commité — on journalise et on continue.
+        logger.exception("Échec d'envoi d'e-mail à %s (sujet: %s)", to, subject)
 
 
 def send_whatsapp(to_phone: str, body: str) -> None:

@@ -247,6 +247,16 @@ def admin_update_status(
                 )
             )
 
+    session.add(application)
+    session.commit()
+    session.refresh(application)
+
+    # Notifications envoyées seulement après le commit : un appel SMTP est
+    # une I/O réseau potentiellement lente ou bloquante, et la faire pendant
+    # que la transaction est encore ouverte garderait le verrou Postgres sur
+    # la ligne "user" tant que l'e-mail n'est pas parti — bloquant au passage
+    # toute autre requête touchant ce même utilisateur (ex. /auth/refresh).
+    if payload.status == PartnerStatus.approved:
         if first_approval:
             notify_partner_approved(application.email, application.contact_name, user.partner_code)
         else:
@@ -259,9 +269,6 @@ def admin_update_status(
                 "accéder à votre espace partenaire.",
             )
 
-    session.add(application)
-    session.commit()
-    session.refresh(application)
     return application
 
 
