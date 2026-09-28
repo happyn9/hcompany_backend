@@ -701,6 +701,9 @@ def accept_offer(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    # NB : action déclenchée depuis le tableau de bord (jamais depuis une
+    # URL partagée), donc l'id interne reste acceptable ici — seule la page
+    # de paiement, elle, est adressée via Offer.public_id (voir create_payment).
     application = session.exec(
         select(PartnerApplication).where(PartnerApplication.user_id == current_user.id)
     ).first()
@@ -1026,7 +1029,7 @@ def create_payment(
     partner: PartnerApplication = Depends(get_current_partner),
     session: Session = Depends(get_session),
 ):
-    offer = session.get(Offer, payload.offer_id)
+    offer = session.exec(select(Offer).where(Offer.public_id == payload.offer_public_id)).first()
     if not offer or offer.partner_application_id != partner.id:
         raise HTTPException(status_code=404, detail="Offre introuvable.")
 
@@ -1083,3 +1086,4 @@ def my_payments(
         .where(Payment.partner_application_id == partner.id)
         .order_by(Payment.created_at.desc())
     ).all()
+

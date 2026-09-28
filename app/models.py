@@ -1,8 +1,18 @@
+import secrets
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
+
+
+def _generate_public_offer_id() -> str:
+    """Identifiant public non séquentiel pour les URLs exposées à un
+    partenaire (page de paiement) — même principe qu'un ID de profil
+    Facebook (long nombre aléatoire, jamais un simple auto-incrément) :
+    on ne peut pas deviner ou énumérer les offres d'un autre partenaire en
+    changeant un chiffre dans l'URL."""
+    return "".join(secrets.choice("0123456789") for _ in range(18))
 
 
 # --- Enums ---
@@ -140,6 +150,10 @@ class OfferStatus(str, Enum):
 
 class Offer(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    # Identifiant opaque utilisé dans l'URL publique /paiement/... — voir
+    # _generate_public_offer_id ci-dessus. `id` reste la clé primaire
+    # interne, jamais exposée dans une URL.
+    public_id: str = Field(default_factory=_generate_public_offer_id, unique=True, index=True)
     partner_application_id: int = Field(foreign_key="partnerapplication.id")
     title: str  # ex: "Starter", "Pro", "Sur mesure"
     price: float

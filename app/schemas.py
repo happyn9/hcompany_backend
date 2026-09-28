@@ -206,6 +206,7 @@ class OfferCreate(BaseModel):
 
 class OfferRead(BaseModel):
     id: int
+    public_id: str
     title: str
     price: float
     duration_months: int
@@ -518,7 +519,10 @@ class UserRoleUpdate(BaseModel):
 # --- Paiement d'une offre (simulé — pas de vrai processeur branché) ---
 
 class PaymentCreate(BaseModel):
-    offer_id: int
+    # Reçoit l'identifiant public opaque de l'offre (Offer.public_id), pas
+    # sa clé primaire interne — voir _generate_public_offer_id dans
+    # app/models.py.
+    offer_public_id: str
     method: str  # "card" | "airtel_money" | "mtn_momo"
     phone_number: Optional[str] = None  # requis pour airtel_money / mtn_momo
 
