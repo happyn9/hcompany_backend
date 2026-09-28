@@ -226,6 +226,35 @@ class Course(SQLModel, table=True):
     description: str
 
 
+class TrainingRequestStatus(str, Enum):
+    new = "new"
+    contacted = "contacted"
+    closed = "closed"
+
+
+class CompanyTrainingRequest(SQLModel, table=True):
+    """Demande d'une entreprise pour inscrire plusieurs de ses employés à
+    une formation H-Learning (formulaire "Formation d'équipe"). Volontairement
+    distinct de ContactMessage : les champs structurés (nombre d'employés,
+    domaines, formule) permettent à l'admin de traiter la demande sans
+    reparser un message libre, et `estimated_total` est calculé côté
+    serveur pour ne jamais faire confiance à un montant envoyé par le
+    client. Le paiement réel (facturation B2B) se négocie ensuite avec
+    l'admin — ce n'est pas un montant prélevé automatiquement."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    company: str
+    contact_name: str
+    contact_email: str
+    employee_count: int
+    domains: str = ""  # domaines choisis, séparés par virgule
+    plan: str  # "1" | "6" | "12" (mois)
+    monthly_price_per_employee: float
+    estimated_total: float
+    message: Optional[str] = None
+    status: TrainingRequestStatus = Field(default=TrainingRequestStatus.new)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # --- Produits / marketplace ---
 
 class Product(SQLModel, table=True):

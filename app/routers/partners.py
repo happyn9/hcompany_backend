@@ -63,6 +63,7 @@ from app.services.accounts import (
     notify_partner_credentials,
 )
 from app.services.notifications import create_in_app_notification, send_email
+from app.services.payments import charge as charge_payment
 
 router = APIRouter(prefix="/api/v1/partners", tags=["partners"])
 logger = logging.getLogger("hcompany.partners")
@@ -223,7 +224,7 @@ def admin_update_status(
             user.partner_code = generate_partner_code()
 
         user.account_status = AccountStatus.active
-        user.trial_ends_at = datetime.utcnow() + timedelta(days=30)
+        user.trial_ends_at = datetime.utcnow() + timedelta(days=7)
         session.add(user)
 
         application.user_id = user.id
@@ -532,6 +533,11 @@ def my_account_status(current_user: User = Depends(get_current_user)):
         partner_code=current_user.partner_code,
         trial_ends_at=current_user.trial_ends_at,
         trial_days_left=days_left,
+        email=current_user.email,
+        phone=current_user.phone,
+        full_name=current_user.full_name,
+        role=current_user.role.value,
+        member_since=current_user.created_at,
     )
 
 
@@ -805,13 +811,15 @@ def create_payment(
     session.commit()
     session.refresh(payment)
 
-    # Pas de vrai processeur branché (pas de clés API Stripe/Airtel/MTN
-    # disponibles) — on simule une confirmation immédiate pour que le
-    # flux complet (partenaire → paiement → statut) soit testable de bout
-    # en bout dès maintenant. À remplacer par un vrai webhook de
-    # confirmation asynchrone quand un processeur réel sera branché.
-    payment.status = PaymentStatus.completed
-    payment.completed_at = datetime.utcnow()
+    # `charge_payment` simule une confirmation immédiate tant qu'aucune clé
+    # de fournisseur (Stripe/Airtel Money/MTN MoMo) n'est configurée — voir
+    # app/services/payments/gateway.py. Dès qu'une clé est renseignée, cet
+    # appel bascule automatiquement sur le vrai fournisseur sans qu'il soit
+    # nécessaire de toucher à cet endpoint.
+    result = charge_payment(method, offer.price, payment.reference, payload.phone_number)
+    payment.status = PaymentStatus.completed if result.success else PaymentStatus.failed
+    if result.completed_at:
+        payment.completed_at = result.completed_at
     session.add(payment)
     session.commit()
     session.refresh(payment)

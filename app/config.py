@@ -63,6 +63,23 @@ class Settings(BaseSettings):
     # --- Push (plateforme mobile/desktop) — non branché pour l'instant ---
     fcm_server_key: Optional[str] = None
 
+    # --- Paiement (cartes + mobile money) ---
+    # Tant qu'aucune clé n'est renseignée, app/services/payments simule les
+    # paiements (confirmation immédiate) pour que tout le flux partenaire →
+    # paiement → statut soit testable dès maintenant. Renseigner une clé
+    # active automatiquement le vrai appel pour ce fournisseur — voir
+    # app/services/payments/README.md pour la liste exacte des variables
+    # par fournisseur (Stripe, Airtel Money, MTN MoMo).
+    stripe_secret_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
+    airtel_money_client_id: Optional[str] = None
+    airtel_money_client_secret: Optional[str] = None
+    airtel_money_api_base: str = "https://openapiuat.airtel.africa"  # UAT par défaut ; passer à l'URL prod une fois validé
+    mtn_momo_subscription_key: Optional[str] = None
+    mtn_momo_api_user: Optional[str] = None
+    mtn_momo_api_key: Optional[str] = None
+    mtn_momo_api_base: str = "https://sandbox.momodeveloper.mtn.com"  # sandbox par défaut ; passer à l'URL prod une fois validé
+
     # --- Supervision des erreurs (Sentry) — vide = désactivé ---
     sentry_dsn: Optional[str] = None
 

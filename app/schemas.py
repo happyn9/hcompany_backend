@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import (
     AccountStatus,
@@ -140,6 +140,13 @@ class AccountStatusRead(BaseModel):
     partner_code: Optional[str] = None
     trial_ends_at: Optional[datetime] = None
     trial_days_left: Optional[int] = None
+    # Ajoutés pour l'espace "Gérer mon compte" — évite un second aller-retour
+    # réseau juste pour afficher l'identité du compte.
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    member_since: Optional[datetime] = None
 
 
 class ContractRead(BaseModel):
@@ -220,6 +227,45 @@ class CourseRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Prix mensuel par employé selon la formule choisie — même grille que celle
+# affichée sur la page "Formation d'équipe" (teamTraining.plan*Price côté
+# frontend). Recalculé ici pour ne jamais faire confiance à un total envoyé
+# par le client.
+TRAINING_PLAN_PRICES = {"1": 300.0, "6": 250.0, "12": 200.0}
+
+
+class CompanyTrainingRequestCreate(BaseModel):
+    company: str
+    contact_name: str
+    contact_email: EmailStr
+    employee_count: int = Field(gt=0)
+    domains: list[str] = []
+    plan: str
+    message: Optional[str] = None
+
+
+class CompanyTrainingRequestRead(BaseModel):
+    id: int
+    company: str
+    contact_name: str
+    contact_email: str
+    employee_count: int
+    domains: str
+    plan: str
+    monthly_price_per_employee: float
+    estimated_total: float
+    message: Optional[str] = None
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CompanyTrainingRequestStatusUpdate(BaseModel):
+    status: str
 
 
 # --- Produits ---
@@ -417,6 +463,22 @@ class NotificationRead(BaseModel):
     channel: str
     read: bool
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AdminSendNotification(BaseModel):
+    user_id: int
+    title: str
+    body: str
+    also_email: bool = False
+
+
+class UserLookupRead(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str] = None
 
     class Config:
         from_attributes = True

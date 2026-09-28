@@ -77,7 +77,7 @@ def notify_partner_credentials(email: str, full_name: str, partner_code: str, pa
         "tableau de bord (et plus tard, aux applications mobile et desktop du réseau, "
         "avec les mêmes identifiants). Vous pourrez changer votre mot de passe à tout "
         "moment depuis les réglages de votre espace.\n\n"
-        "Votre essai gratuit de 30 jours démarre dès maintenant.",
+        "Votre essai gratuit de 7 jours démarre dès maintenant.",
     )
 
 
@@ -92,5 +92,5 @@ def notify_partner_approved(email: str, full_name: str, partner_code: str) -> No
         "Bonne nouvelle : votre candidature a été approuvée, bienvenue dans le réseau H-Company.\n\n"
         f"Votre code partenaire : {partner_code}\n\n"
         "Connectez-vous avec le compte que vous utilisez déjà pour accéder à votre "
-        "tableau de bord partenaire. Votre essai gratuit de 30 jours démarre dès maintenant.",
+        "tableau de bord partenaire. Votre essai gratuit de 7 jours démarre dès maintenant.",
     )
