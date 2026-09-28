@@ -57,6 +57,8 @@ from app.schemas import (
     PaymentRead,
     RevenueEntryCreate,
     RevenueEntryRead,
+    UserLookupRead,
+    UserRoleUpdate,
 )
 from app.security import hash_password
 from app.services.accounts import (
@@ -183,6 +185,17 @@ def admin_list_payments(
     # l'ordre : la route générique aurait sinon intercepté "payments" comme
     # s'il s'agissait d'un application_id.
     return session.exec(select(Payment).order_by(Payment.created_at.desc())).all()
+
+
+@router.get("/admin/agents", response_model=List[UserLookupRead])
+def admin_list_agents(
+    session: Session = Depends(get_session),
+    _admin: User = Depends(get_current_admin),
+):
+    # Doit être déclarée AVANT /admin/{application_id} ci-dessous, pour la
+    # même raison que /admin/payments ci-dessus (sinon "agents" serait
+    # interprété comme un application_id).
+    return session.exec(select(User).where(User.role == UserRole.agent)).all()
 
 
 @router.get("/admin/{application_id}", response_model=PartnerApplicationRead)
@@ -471,6 +484,40 @@ def agent_review_application(
         )
 
     return _agent_read(application)
+
+
+# --- Gestion des comptes agents (admin uniquement) ---
+# (la liste GET /admin/agents est déclarée plus haut, avant /admin/{application_id})
+
+@router.patch("/admin/users/{user_id}/role", response_model=UserLookupRead)
+def admin_set_user_role(
+    user_id: int,
+    payload: UserRoleUpdate,
+    session: Session = Depends(get_session),
+    admin: User = Depends(get_current_admin),
+):
+    """Promeut un utilisateur au rôle agent, ou l'y retire (retour à
+    'client'). Volontairement limité à ces deux valeurs : cet écran rapide
+    n'est pas fait pour créer d'autres admins ni pour toucher au rôle
+    'partner' (qui se gère par l'approbation d'une candidature)."""
+    if payload.role not in ("agent", "client"):
+        raise HTTPException(status_code=422, detail="Rôle invalide — seuls 'agent' et 'client' sont gérés ici.")
+
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+    if user.id == admin.id:
+        raise HTTPException(status_code=400, detail="Impossible de modifier votre propre rôle.")
+    if user.role == UserRole.admin:
+        raise HTTPException(status_code=400, detail="Impossible de modifier le rôle d'un administrateur depuis cet écran.")
+    if user.role == UserRole.partner and payload.role == "agent":
+        raise HTTPException(status_code=400, detail="Ce compte est déjà partenaire — retirez-le du réseau avant d'en faire un agent.")
+
+    user.role = UserRole(payload.role)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
 # --- Espace partenaire (dashboard) ---
@@ -1036,4 +1083,3 @@ def my_payments(
         .where(Payment.partner_application_id == partner.id)
         .order_by(Payment.created_at.desc())
     ).all()
-
