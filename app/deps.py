@@ -53,6 +53,15 @@ def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
+def get_current_agent(current_user: User = Depends(get_current_user)) -> User:
+    """Réservé aux agents ET aux admins (un admin peut toujours faire le
+    travail d'un agent) — utilisé pour la file de revue des candidatures
+    partenaires et les tâches de maintenance."""
+    if current_user.role not in (UserRole.agent, UserRole.admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Accès réservé aux agents H-Company.")
+    return current_user
+
+
 def get_current_partner(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),

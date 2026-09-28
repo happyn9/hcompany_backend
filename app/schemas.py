@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from app.models import (
     AccountStatus,
     ActivityCategory,
+    AgentReviewStatus,
     AppStatus,
     ContractStatus,
     OfferStatus,
@@ -111,6 +112,11 @@ class PartnerApplicationCreate(BaseModel):
     contactName: str
     category: str
     message: Optional[str] = None
+    # --- Dossier KYC — formulaire unique de candidature ---
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    id_document_type: Optional[str] = None  # national_id | voter_card | passport
+    id_document_number: Optional[str] = None
 
 
 class PartnerApplicationRead(BaseModel):
@@ -122,13 +128,33 @@ class PartnerApplicationRead(BaseModel):
     message: Optional[str] = None
     status: PartnerStatus
     created_at: datetime
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    id_document_type: Optional[str] = None
+    id_document_number: Optional[str] = None
+    agent_review_status: AgentReviewStatus = AgentReviewStatus.pending
+    agent_review_note: Optional[str] = None
+    agent_reviewed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
 
+# Vue agent/admin — construite explicitement (jamais via from_attributes
+# direct sur l'ORM) pour ajouter `id_document_available` sans dépendre d'un
+# attribut qui n'existe pas sur PartnerApplication, et sans jamais exposer
+# le chemin de stockage réel du document.
+class PartnerApplicationAgentRead(PartnerApplicationRead):
+    id_document_available: bool = False
+
+
 class PartnerStatusUpdate(BaseModel):
     status: PartnerStatus
+
+
+class AgentReviewDecision(BaseModel):
+    decision: AgentReviewStatus  # forwarded | rejected (pending n'est pas une décision valide ici)
+    note: Optional[str] = None
 
 
 class AccountStatusUpdate(BaseModel):

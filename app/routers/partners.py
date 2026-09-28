@@ -1,19 +1,23 @@
 import logging
 import secrets
+import uuid
 from datetime import datetime, timedelta
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.config import settings
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.deps import get_current_admin, get_current_partner, get_current_user
+from app.deps import get_current_admin, get_current_agent, get_current_partner, get_current_user
 from app.models import (
     AccountStatus,
     ActivityCategory,
+    AgentReviewStatus,
     AppStatus,
     Contract,
     ContractStatus,
@@ -34,6 +38,7 @@ from app.schemas import (
     AccountStatusRead,
     AccountStatusUpdate,
     ActivityCategoryCount,
+    AgentReviewDecision,
     BillingSummary,
     ContractRead,
     ContractSign,
@@ -44,7 +49,7 @@ from app.schemas import (
     PartnerAppCreate,
     PartnerAppRead,
     PartnerAppStatusUpdate,
-    PartnerApplicationCreate,
+    PartnerApplicationAgentRead,
     PartnerApplicationRead,
     PartnerStats,
     PartnerStatusUpdate,
@@ -68,6 +73,22 @@ from app.services.payments import charge as charge_payment
 router = APIRouter(prefix="/api/v1/partners", tags=["partners"])
 logger = logging.getLogger("hcompany.partners")
 
+# --- Stockage KYC (pièces d'identité) ---
+# Volontairement HORS du dossier "uploads/" monté en StaticFiles dans
+# main.py — une pièce d'identité ne doit jamais être accessible par une URL
+# publique. Seul l'endpoint /agent/{id}/document (agent ou admin authentifié)
+# peut la lire, après vérification du rôle.
+PRIVATE_UPLOAD_ROOT = Path(__file__).resolve().parent.parent.parent / "private_uploads"
+KYC_DIR = PRIVATE_UPLOAD_ROOT / "kyc"
+KYC_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_ID_DOCUMENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "application/pdf": ".pdf",
+}
+MAX_ID_DOCUMENT_SIZE = 5 * 1024 * 1024  # 5 Mo
+VALID_ID_DOCUMENT_TYPES = {"national_id", "voter_card", "passport"}
+
 DEFAULT_CONTRACT_TEMPLATE = """\
 CONTRAT DE PARTENARIAT — H-COMPANY
 
@@ -83,30 +104,62 @@ conditions ci-dessus et accepte de démarrer la phase pilote avec H-Company.
 """
 
 
-# --- Candidature publique ---
+# --- Candidature publique (formulaire unique, KYC inclus) ---
 
 @router.post("/apply", response_model=PartnerApplicationRead, status_code=status.HTTP_201_CREATED)
 def apply(
-    payload: PartnerApplicationCreate,
+    company: str = Form(...),
+    contactName: str = Form(...),
+    category: str = Form(...),
+    message: Optional[str] = Form(None),
+    phone: str = Form(...),
+    address: str = Form(...),
+    id_document_type: str = Form(...),
+    id_document_number: str = Form(...),
+    id_document: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Demande de partenariat — nécessite d'être connecté. L'e-mail vient du
-    compte authentifié, jamais du formulaire, pour ne jamais laisser
-    quelqu'un soumettre une candidature au nom d'une autre adresse."""
+    """Demande de partenariat — formulaire unique et complet (KYC inclus) :
+    nécessite d'être connecté. L'e-mail vient du compte authentifié, jamais
+    du formulaire, pour ne jamais laisser quelqu'un soumettre une
+    candidature au nom d'une autre adresse. La pièce d'identité est stockée
+    hors du dossier public /uploads — elle ne sera lue que par un agent ou
+    un admin, via un endpoint authentifié dédié, avant toute confirmation."""
+    if id_document_type not in VALID_ID_DOCUMENT_TYPES:
+        raise HTTPException(status_code=422, detail="Type de pièce d'identité invalide.")
+
+    ext = ALLOWED_ID_DOCUMENT_TYPES.get(id_document.content_type)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail="Format de pièce d'identité non accepté (formats acceptés : JPG, PNG, PDF).",
+        )
+    raw = id_document.file.read()
+    if len(raw) > MAX_ID_DOCUMENT_SIZE:
+        raise HTTPException(status_code=400, detail="La pièce d'identité ne doit pas dépasser 5 Mo.")
+
+    filename = f"{uuid.uuid4().hex}{ext}"
+    (KYC_DIR / filename).write_bytes(raw)
+
     application = PartnerApplication(
-        company=payload.company,
-        contact_name=payload.contactName,
+        company=company,
+        contact_name=contactName,
         email=current_user.email,
-        category=payload.category,
-        message=payload.message,
+        category=category,
+        message=message,
         user_id=current_user.id,
+        phone=phone,
+        address=address,
+        id_document_type=id_document_type,
+        id_document_number=id_document_number,
+        id_document_path=f"kyc/{filename}",
     )
     session.add(application)
     session.commit()
     session.refresh(application)
 
-    notify_new_dashboard_access(current_user.email, payload.contactName)
+    notify_new_dashboard_access(current_user.email, contactName)
     return application
 
 
@@ -191,6 +244,17 @@ def admin_update_status(
     if not application:
         raise HTTPException(status_code=404, detail="Candidature introuvable.")
 
+    if payload.status == PartnerStatus.approved and application.agent_review_status != AgentReviewStatus.forwarded:
+        # Le dashboard partenaire ne doit jamais s'activer sans passage par
+        # un agent : celui-ci vérifie la pièce d'identité et la cohérence du
+        # dossier avant de le transmettre. L'admin garde le dernier mot
+        # (confirmation ou refus) mais ne peut pas court-circuiter cette
+        # étape pour une candidature encore non transmise.
+        raise HTTPException(
+            status_code=400,
+            detail="Cette candidature doit d'abord être examinée et transmise par un agent avant confirmation.",
+        )
+
     application.status = payload.status
     application.reviewed_at = datetime.utcnow()
 
@@ -271,6 +335,142 @@ def admin_update_status(
             )
 
     return application
+
+
+# --- Espace agent (revue KYC avant confirmation finale par l'admin) ---
+
+def _agent_read(application: PartnerApplication) -> PartnerApplicationAgentRead:
+    return PartnerApplicationAgentRead(
+        id=application.id,
+        company=application.company,
+        contact_name=application.contact_name,
+        email=application.email,
+        category=application.category,
+        message=application.message,
+        status=application.status,
+        created_at=application.created_at,
+        phone=application.phone,
+        address=application.address,
+        id_document_type=application.id_document_type,
+        id_document_number=application.id_document_number,
+        agent_review_status=application.agent_review_status,
+        agent_review_note=application.agent_review_note,
+        agent_reviewed_at=application.agent_reviewed_at,
+        id_document_available=bool(application.id_document_path),
+    )
+
+
+@router.get("/agent/queue", response_model=List[PartnerApplicationAgentRead])
+def agent_queue(
+    session: Session = Depends(get_session),
+    _agent: User = Depends(get_current_agent),
+):
+    """File d'attente de l'agent — candidatures pas encore examinées."""
+    applications = session.exec(
+        select(PartnerApplication)
+        .where(PartnerApplication.agent_review_status == AgentReviewStatus.pending)
+        .order_by(PartnerApplication.created_at.asc())
+    ).all()
+    return [_agent_read(a) for a in applications]
+
+
+@router.get("/agent/history", response_model=List[PartnerApplicationAgentRead])
+def agent_history(
+    session: Session = Depends(get_session),
+    _agent: User = Depends(get_current_agent),
+):
+    """Historique des candidatures déjà traitées par un agent (transmises ou rejetées)."""
+    applications = session.exec(
+        select(PartnerApplication)
+        .where(PartnerApplication.agent_review_status != AgentReviewStatus.pending)
+        .order_by(PartnerApplication.agent_reviewed_at.desc())
+    ).all()
+    return [_agent_read(a) for a in applications]
+
+
+@router.get("/agent/{application_id}", response_model=PartnerApplicationAgentRead)
+def agent_get_application(
+    application_id: int,
+    session: Session = Depends(get_session),
+    _agent: User = Depends(get_current_agent),
+):
+    application = session.get(PartnerApplication, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Candidature introuvable.")
+    return _agent_read(application)
+
+
+@router.get("/agent/{application_id}/document")
+def agent_get_document(
+    application_id: int,
+    session: Session = Depends(get_session),
+    _agent: User = Depends(get_current_agent),
+):
+    """Diffuse la pièce d'identité jointe — réservé aux agents et admins.
+    Jamais servi via /uploads (public) : chaque accès repasse par cette
+    vérification de rôle."""
+    application = session.get(PartnerApplication, application_id)
+    if not application or not application.id_document_path:
+        raise HTTPException(status_code=404, detail="Aucune pièce d'identité pour cette candidature.")
+    file_path = PRIVATE_UPLOAD_ROOT / application.id_document_path
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Fichier introuvable sur le serveur.")
+    return FileResponse(file_path)
+
+
+@router.patch("/agent/{application_id}/review", response_model=PartnerApplicationAgentRead)
+def agent_review_application(
+    application_id: int,
+    payload: AgentReviewDecision,
+    session: Session = Depends(get_session),
+    agent: User = Depends(get_current_agent),
+):
+    """L'agent examine le dossier (identité, cohérence) puis :
+    - `forwarded` : transmet à l'admin, qui pourra alors confirmer
+      l'activation du dashboard (voir admin_update_status ci-dessus) ;
+    - `rejected` : clôture directement le dossier, l'admin n'a plus à
+      intervenir — le candidat est notifié immédiatement."""
+    if payload.decision not in (AgentReviewStatus.forwarded, AgentReviewStatus.rejected):
+        raise HTTPException(status_code=422, detail="Décision invalide — utiliser 'forwarded' ou 'rejected'.")
+
+    application = session.get(PartnerApplication, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Candidature introuvable.")
+
+    application.agent_review_status = payload.decision
+    application.agent_review_note = payload.note
+    application.agent_id = agent.id
+    application.agent_reviewed_at = datetime.utcnow()
+
+    if payload.decision == AgentReviewStatus.rejected:
+        application.status = PartnerStatus.rejected
+        application.reviewed_at = datetime.utcnow()
+
+    session.add(application)
+    session.commit()
+    session.refresh(application)
+
+    if payload.decision == AgentReviewStatus.rejected:
+        send_email(
+            application.email,
+            "Votre candidature partenaire H-Company",
+            f"Bonjour {application.contact_name},\n\n"
+            f"Après examen de votre dossier pour {application.company}, nous ne sommes "
+            "malheureusement pas en mesure d'y donner suite pour le moment."
+            + (f"\n\nMotif : {payload.note}" if payload.note else "")
+            + "\n\nVous pouvez nous contacter si vous souhaitez plus de précisions.",
+        )
+    else:
+        send_email(
+            application.email,
+            "Votre candidature partenaire H-Company avance",
+            f"Bonjour {application.contact_name},\n\n"
+            f"Votre dossier pour {application.company} a été examiné et transmis pour "
+            "confirmation finale. Vous recevrez un e-mail dès que votre espace partenaire "
+            "sera activé.",
+        )
+
+    return _agent_read(application)
 
 
 # --- Espace partenaire (dashboard) ---

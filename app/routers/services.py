@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.deps import get_current_admin, get_current_user
+from app.deps import get_current_admin, get_current_agent, get_current_user
 from app.models import ServiceCatalogItem, ServiceSubscription, SubscriptionStatus, User
 from app.schemas import (
     MyServicesSummary,
@@ -147,7 +147,9 @@ def my_subscriptions(
 @router.get("/admin/pending", response_model=List[ServiceSubscriptionAdminRead])
 def admin_pending_subscriptions(
     session: Session = Depends(get_session),
-    _admin: User = Depends(get_current_admin),
+    # Lecture seule ouverte aux agents (analyse/maintenance) — seule
+    # l'écriture (statut) reste réservée à l'admin ci-dessous.
+    _agent: User = Depends(get_current_agent),
 ):
     subs = session.exec(
         select(ServiceSubscription)
@@ -160,7 +162,7 @@ def admin_pending_subscriptions(
 @router.get("/admin", response_model=List[ServiceSubscriptionAdminRead])
 def admin_list_subscriptions(
     session: Session = Depends(get_session),
-    _admin: User = Depends(get_current_admin),
+    _agent: User = Depends(get_current_agent),
 ):
     subs = session.exec(
         select(ServiceSubscription).order_by(ServiceSubscription.created_at.desc())

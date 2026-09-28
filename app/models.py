@@ -9,8 +9,19 @@ from sqlmodel import SQLModel, Field
 
 class UserRole(str, Enum):
     admin = "admin"
+    # Rôle intermédiaire : analyse les candidatures partenaires (pièce
+    # d'identité, cohérence des infos) et la maintenance courante, mais ne
+    # décide jamais seul — il transmet sa recommandation à l'admin, qui
+    # garde le dernier mot (voir AgentReviewStatus / admin_update_status).
+    agent = "agent"
     partner = "partner"
     client = "client"
+
+
+class AgentReviewStatus(str, Enum):
+    pending = "pending"      # pas encore examinée par un agent
+    forwarded = "forwarded"  # agent favorable → transmise à l'admin pour confirmation finale
+    rejected = "rejected"    # agent défavorable → dossier clos, l'admin n'a plus à intervenir
 
 
 class AccountStatus(str, Enum):
@@ -95,6 +106,23 @@ class PartnerApplication(SQLModel, table=True):
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     reviewed_at: Optional[datetime] = None
+
+    # --- Dossier KYC (formulaire unique de candidature) ---
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    # "national_id" | "voter_card" | "passport"
+    id_document_type: Optional[str] = None
+    id_document_number: Optional[str] = None
+    # Chemin relatif dans le stockage PRIVÉ (jamais servi via /uploads) —
+    # une pièce d'identité n'est accessible qu'à travers l'endpoint
+    # authentifié agent/admin qui la diffuse après vérification du rôle.
+    id_document_path: Optional[str] = None
+
+    # --- Étape de revue par un agent, avant confirmation finale par l'admin ---
+    agent_review_status: AgentReviewStatus = Field(default=AgentReviewStatus.pending)
+    agent_review_note: Optional[str] = None
+    agent_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    agent_reviewed_at: Optional[datetime] = None
 
 
 class PaymentMode(str, Enum):
