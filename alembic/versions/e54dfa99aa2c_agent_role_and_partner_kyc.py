@@ -27,12 +27,17 @@ def upgrade() -> None:
     # principe déjà appliqué à ServiceSubscription.service_key : on convertit
     # la colonne en chaîne libre. batch_alter_table pour rester compatible
     # SQLite (dev) et PostgreSQL (prod).
+    # PostgreSQL refuse de caster un ENUM vers VARCHAR sans conversion
+    # explicite ("column role cannot be cast automatically to type character
+    # varying") — postgresql_using le précise. Sur SQLite ce paramètre est
+    # simplement ignoré (pas de vrai type ENUM là-bas).
     with op.batch_alter_table('user', schema=None) as batch_op:
         batch_op.alter_column(
             'role',
             existing_type=sa.Enum('admin', 'partner', 'client', name='userrole'),
             type_=sqlmodel.sql.sqltypes.AutoString(),
             existing_nullable=False,
+            postgresql_using='role::text',
         )
     if op.get_bind().dialect.name == "postgresql":
         op.execute('DROP TYPE IF EXISTS userrole')
@@ -98,4 +103,5 @@ def downgrade() -> None:
             existing_type=sqlmodel.sql.sqltypes.AutoString(),
             type_=sa.Enum('admin', 'partner', 'client', name='userrole', create_type=False),
             existing_nullable=False,
+            postgresql_using='role::userrole',
         )
