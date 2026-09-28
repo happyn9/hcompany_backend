@@ -505,9 +505,14 @@ class UserLookupRead(BaseModel):
     id: int
     email: str
     full_name: Optional[str] = None
+    role: str = "client"
 
     class Config:
         from_attributes = True
+
+
+class UserRoleUpdate(BaseModel):
+    role: str  # "agent" | "client" uniquement — voir admin_set_user_role
 
 
 # --- Paiement d'une offre (simulé — pas de vrai processeur branché) ---
