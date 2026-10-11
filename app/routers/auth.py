@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -49,6 +49,12 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
     )
 
 
+# Un client HTTP partagé (connexions réutilisées) : chaque appel n'a plus à
+# refaire la poignée de main TLS vers le service d'authentification, ce qui
+# fait gagner du temps sur chaque inscription, connexion et envoi de code.
+_http = httpx.Client(timeout=httpx.Timeout(45.0, connect=20.0), limits=httpx.Limits(max_keepalive_connections=10))
+
+
 def _call_auth_service(method: str, path: str, **kwargs) -> dict:
     """Tous les appels vers le service central passent par ici — une seule
     fonction pour traduire ses erreurs en HTTPException FastAPI, et gérer
@@ -60,8 +66,7 @@ def _call_auth_service(method: str, path: str, **kwargs) -> dict:
         # délai de 10s abandonnait avant même que la requête n'arrive,
         # renvoyant un 503 alors que le service était simplement en train
         # de démarrer.
-        with httpx.Client(timeout=45) as client:
-            resp = client.request(method, f"{AUTH_SERVICE}{path}", **kwargs)
+        resp = _http.request(method, f"{AUTH_SERVICE}{path}", **kwargs)
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -166,8 +171,28 @@ def me(current_user: User = Depends(get_current_user)):
 # --- OTP (relayé vers le service central — e-mail uniquement pour l'instant,
 # le service central ne gère pas encore le canal WhatsApp) ---
 
+def _ping_auth_service() -> None:
+    """Réveille le service d'authentification (hébergeur gratuit en veille).
+    Toute réponse, même une 404, prouve qu'il est debout : on ignore le résultat."""
+    try:
+        _http.get(f"{AUTH_SERVICE}/health", timeout=60)
+    except httpx.HTTPError:
+        pass
+
+
+@router.get("/warmup", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("12/minute")
+def warmup(request: Request, background: BackgroundTasks):
+    """Appelé par le site dès l'arrivée sur l'accueil, la connexion ou
+    l'inscription : répond tout de suite et réveille le service central en
+    tâche de fond, pour que le premier envoi de code ne subisse pas le
+    démarrage à froid."""
+    background.add_task(_ping_auth_service)
+    return {"status": "warming"}
+
+
 @router.post("/otp/request", status_code=status.HTTP_202_ACCEPTED)
-@limiter.limit("3/minute")
+@limiter.limit("6/minute")
 def request_otp(request: Request, payload: OTPRequest, session: Session = Depends(get_session)):
     _call_auth_service(
         "POST", "/api/v1/auth/otp/request", json={"email": payload.identifier, "purpose": payload.purpose.value}
