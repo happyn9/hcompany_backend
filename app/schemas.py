@@ -246,14 +246,121 @@ class PartnerStats(BaseModel):
 
 # --- Apprentissage ---
 
+def _lines(value: Optional[str]) -> list[str]:
+    return [ln.strip() for ln in (value or "").splitlines() if ln.strip()]
+
+
 class CourseRead(BaseModel):
     id: int
     title: str
     level: str
     description: str
+    category: str = "Numérique"
+    image_url: Optional[str] = None
+    lesson_count: int = 0
+    total_seconds: int = 0
 
     class Config:
         from_attributes = True
+
+
+class LessonRead(BaseModel):
+    id: int
+    section: str = ""
+    title: str
+    description: str = ""
+    youtube_id: str
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    position: int = 0
+    published_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CourseDetailRead(CourseRead):
+    outcomes: list[str] = []
+    requirements: list[str] = []
+    youtube_playlist_id: Optional[str] = None
+    lessons: list[LessonRead] = []
+
+
+class CourseAdminRead(CourseRead):
+    outcomes: str = ""
+    requirements: str = ""
+    youtube_playlist_id: Optional[str] = None
+    sort_order: int = 0
+    is_published: bool = True
+    synced_at: Optional[datetime] = None
+
+
+class CourseAdminWrite(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    level: str = Field(default="Tous niveaux", max_length=60)
+    description: str = Field(default="", max_length=2000)
+    category: str = Field(default="Numérique", max_length=80)
+    image_url: Optional[str] = Field(default=None, max_length=500)
+    # Lien de playlist YouTube ou identifiant ; vide = pas de playlist.
+    youtube_playlist: Optional[str] = Field(default=None, max_length=300)
+    outcomes: str = Field(default="", max_length=3000)
+    requirements: str = Field(default="", max_length=3000)
+    sort_order: int = 0
+    is_published: bool = True
+
+
+class LessonAdminWrite(BaseModel):
+    title: str = Field(min_length=1, max_length=250)
+    description: str = Field(default="", max_length=1000)
+    section: str = Field(default="", max_length=120)
+    youtube_url: str = Field(max_length=300)  # lien YouTube ou ID de la vidéo
+    position: Optional[int] = None
+    is_published: bool = True
+
+
+class LessonProgressWrite(BaseModel):
+    completed: bool = False
+    position_seconds: int = Field(default=0, ge=0, le=86400)
+
+
+class LessonProgressRead(BaseModel):
+    lesson_id: int
+    completed: bool
+    position_seconds: int
+
+    class Config:
+        from_attributes = True
+
+
+class TrainingRegistrationCreate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: Optional[str] = Field(default=None, max_length=40)
+    city: Optional[str] = Field(default=None, max_length=80)
+    course_id: Optional[int] = None
+    availability: Optional[str] = Field(default=None, max_length=200)
+    message: Optional[str] = Field(default=None, max_length=2000)
+
+
+class TrainingRegistrationRead(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    phone: Optional[str] = None
+    city: Optional[str] = None
+    course_id: Optional[int] = None
+    course_title: Optional[str] = None
+    availability: Optional[str] = None
+    message: Optional[str] = None
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TrainingRegistrationStatusUpdate(BaseModel):
+    status: str
 
 
 # Prix mensuel par employé selon la formule choisie — même grille que celle

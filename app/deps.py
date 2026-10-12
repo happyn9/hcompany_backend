@@ -80,3 +80,24 @@ def get_current_partner(
         )
 
     return application
+
+
+def get_optional_user(
+    request: Request,
+    header_token: str = Depends(oauth2_scheme),
+    session: Session = Depends(get_session),
+) -> Optional[User]:
+    """Utilisateur connecté s'il y en a un, sinon None — pour les
+    formulaires publics (inscription à une formation) qui se rattachent au
+    compte quand la personne est connectée, sans l'exiger."""
+    token = _extract_token(request, header_token)
+    if not token:
+        return None
+    payload = decode_shared_token(token)
+    if not payload:
+        return None
+    try:
+        user = resolve_local_user(session, uid=payload["uid"], email=payload["sub"])
+    except Exception:
+        return None
+    return user if user.is_active else None

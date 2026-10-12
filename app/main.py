@@ -17,6 +17,8 @@ from app.config import settings
 from app.database import engine
 from app.middleware import SecurityHeadersMiddleware
 from app.models import Course, Product, User, UserRole
+from app.routers.learning import sync_course_from_youtube
+from app.services.youtube import parse_playlist_id
 from app.routers import auth, partners, learning, products, contact, onboarding, notifications, services
 from app.lukondo.routers import parcels as lukondo_parcels
 from app.lukondo.routers import rooms as lukondo_rooms
@@ -26,26 +28,31 @@ from app.services.rate_limit import limiter
 SEED_COURSES = [
     {
         "title": "Cybersécurité pour débutants",
+        "category": "Cybersécurité",
         "level": "Initiation",
         "description": "Les bons réflexes pour protéger un système et reconnaître les menaces courantes.",
     },
     {
         "title": "Développement mobile avec Flutter",
+        "category": "Développement",
         "level": "Intermédiaire",
         "description": "Construire une application mobile complète, de l'interface à la mise en ligne.",
     },
     {
         "title": "Design d'interfaces",
+        "category": "Design",
         "level": "Initiation",
         "description": "Concevoir des écrans clairs et agréables à utiliser, sans expérience préalable.",
     },
     {
         "title": "Gestion de projet IT",
+        "category": "Gestion",
         "level": "Intermédiaire",
         "description": "Cadrer, planifier et livrer un projet informatique dans les délais annoncés.",
     },
     {
         "title": "Entrepreneuriat numérique",
+        "category": "Business",
         "level": "Tous niveaux",
         "description": "Structurer une idée d'entreprise digitale, du modèle économique au lancement.",
     },
@@ -76,10 +83,38 @@ SEED_PRODUCTS = [
 logger = logging.getLogger("hcompany.startup")
 
 
+
+def _ensure_default_playlist_course(session: Session) -> None:
+    """Si YOUTUBE_DEFAULT_PLAYLIST_ID est défini et qu'aucun cours n'a encore
+    de playlist, crée le cours « Chaîne H-Learning » et importe ses vidéos.
+    Une panne YouTube ne bloque jamais le démarrage."""
+    playlist = parse_playlist_id(settings.youtube_default_playlist_id)
+    if not playlist:
+        return
+    if session.exec(select(Course).where(Course.youtube_playlist_id != None)).first():  # noqa: E711
+        return
+    course = Course(
+        title="Les formations H-Learning",
+        level="Tous niveaux",
+        description="Toutes les vidéos de la chaîne H-Learning, à suivre gratuitement et à votre rythme.",
+        youtube_playlist_id=playlist,
+        sort_order=-1,
+    )
+    session.add(course)
+    session.commit()
+    session.refresh(course)
+    try:
+        sync_course_from_youtube(session, course)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Import YouTube initial impossible : %s", exc)
+
+
 def seed_data() -> None:
     with Session(engine) as session:
         if not session.exec(select(Course)).first():
-            session.add_all([Course(**c) for c in SEED_COURSES])
+            session.add_all([Course(sort_order=i, **c) for i, c in enumerate(SEED_COURSES)])
+            session.flush()
+        _ensure_default_playlist_course(session)
         if not session.exec(select(Product)).first():
             session.add_all([Product(**p) for p in SEED_PRODUCTS])
 

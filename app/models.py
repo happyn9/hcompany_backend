@@ -262,10 +262,77 @@ class PartnerActivity(SQLModel, table=True):
 # --- Apprentissage (H-Learning) ---
 
 class Course(SQLModel, table=True):
+    """Un parcours H-Learning. Les vidéos viennent de YouTube (une playlist
+    de la chaîne H-Learning = un cours) et se suivent gratuitement ; la
+    formation en présentiel passe par une inscription (TrainingRegistration)."""
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     level: str
     description: str
+    category: str = Field(default="Numérique")
+    image_url: Optional[str] = None
+    # ID de la playlist YouTube (ex. PLxxxxxxxx) — vide pour un cours dont les
+    # leçons sont ajoutées à la main.
+    youtube_playlist_id: Optional[str] = None
+    # Listes stockées une entrée par ligne (pas de JSON : lisible en base).
+    outcomes: str = ""
+    requirements: str = ""
+    sort_order: int = Field(default=0)
+    is_published: bool = Field(default=True)
+    synced_at: Optional[datetime] = None
+
+
+class Lesson(SQLModel, table=True):
+    """Une vidéo YouTube d'un cours. Aucun fichier vidéo n'est hébergé ici :
+    on garde l'identifiant YouTube, le titre et la miniature."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    course_id: int = Field(foreign_key="course.id", index=True)
+    section: str = Field(default="")
+    title: str
+    description: str = ""
+    youtube_id: str = Field(index=True)
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    position: int = Field(default=0)
+    source: str = Field(default="youtube")  # youtube (synchronisée) | manual
+    is_published: bool = Field(default=True)
+    published_at: Optional[datetime] = None
+
+
+class LessonProgress(SQLModel, table=True):
+    """Progression d'un utilisateur connecté sur une leçon (les visiteurs
+    sans compte gardent la leur dans le navigateur)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    lesson_id: int = Field(foreign_key="lesson.id", index=True)
+    completed: bool = Field(default=False)
+    position_seconds: int = Field(default=0)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RegistrationStatus(str, Enum):
+    new = "new"
+    contacted = "contacted"
+    enrolled = "enrolled"
+    closed = "closed"
+
+
+class TrainingRegistration(SQLModel, table=True):
+    """Inscription à une formation en présentiel : la personne s'inscrit,
+    puis l'équipe la contacte pour fixer le lieu et les dates. Aucun
+    paiement en ligne — les modalités se règlent avec l'équipe."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    full_name: str
+    email: str = Field(index=True)
+    phone: Optional[str] = None
+    city: Optional[str] = None
+    course_id: Optional[int] = Field(default=None, foreign_key="course.id")
+    course_title: Optional[str] = None  # copie du titre au moment de l'inscription
+    availability: Optional[str] = None
+    message: Optional[str] = None
+    status: RegistrationStatus = Field(default=RegistrationStatus.new)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class TrainingRequestStatus(str, Enum):

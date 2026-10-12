@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     mtn_momo_api_key: Optional[str] = None
     mtn_momo_api_base: str = "https://sandbox.momodeveloper.mtn.com"  # sandbox par défaut ; passer à l'URL prod une fois validé
 
+    # --- YouTube (vidéos H-Learning) ---
+    # Sans clé, la synchronisation lit le flux RSS public de la playlist
+    # (les 15 dernières vidéos). Avec une clé YouTube Data API v3, toute la
+    # playlist est importée, avec les durées.
+    youtube_api_key: Optional[str] = None
+    # Playlist importée par défaut au 1er démarrage si aucun cours n'en a.
+    youtube_default_playlist_id: Optional[str] = None
+    # Les cours liés à une playlist se rafraîchissent seuls après ce délai.
+    youtube_refresh_hours: int = 6
+
     # --- Supervision des erreurs (Sentry) — vide = désactivé ---
     sentry_dsn: Optional[str] = None
 
