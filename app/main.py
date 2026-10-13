@@ -18,8 +18,9 @@ from app.database import engine
 from app.middleware import SecurityHeadersMiddleware
 from app.models import Course, Product, User, UserRole
 from app.routers.learning import sync_course_from_youtube
+from app.routers.learning_plans import seed_learning_plans
 from app.services.youtube import parse_playlist_id
-from app.routers import auth, partners, learning, products, contact, onboarding, notifications, services
+from app.routers import auth, partners, learning, learning_plans, products, contact, onboarding, notifications, services
 from app.lukondo.routers import parcels as lukondo_parcels
 from app.lukondo.routers import rooms as lukondo_rooms
 from app.lukondo.routers import bus as lukondo_bus
@@ -115,6 +116,7 @@ def seed_data() -> None:
             session.add_all([Course(sort_order=i, **c) for i, c in enumerate(SEED_COURSES)])
             session.flush()
         _ensure_default_playlist_course(session)
+        seed_learning_plans(session)
         if not session.exec(select(Product)).first():
             session.add_all([Product(**p) for p in SEED_PRODUCTS])
 
@@ -209,6 +211,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 app.include_router(auth.router)
 app.include_router(partners.router)
 app.include_router(learning.router)
+app.include_router(learning_plans.router)
 app.include_router(products.router)
 app.include_router(contact.router)
 app.include_router(onboarding.router)

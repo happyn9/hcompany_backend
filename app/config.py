@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     mtn_momo_api_key: Optional[str] = None
     mtn_momo_api_base: str = "https://sandbox.momodeveloper.mtn.com"  # sandbox par défaut ; passer à l'URL prod une fois validé
 
+    zamtel_money_api_key: Optional[str] = None
+    zamtel_money_api_secret: Optional[str] = None
+    zamtel_money_api_base: str = "https://sandbox.zamtel.example"  # à remplacer par l'URL fournie par Zamtel
+
+    # --- H-Learning : bouquets ---
+    # Monnaie dans laquelle les prix sont définis et les paiements facturés.
+    learning_pivot_currency: str = "ZMW"
+
     # --- YouTube (vidéos H-Learning) ---
     # Sans clé, la synchronisation lit le flux RSS public de la playlist
     # (les 15 dernières vidéos). Avec une clé YouTube Data API v3, toute la

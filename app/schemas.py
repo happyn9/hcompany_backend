@@ -259,6 +259,7 @@ class CourseRead(BaseModel):
     image_url: Optional[str] = None
     lesson_count: int = 0
     total_seconds: int = 0
+    members_only: bool = False
 
     class Config:
         from_attributes = True
@@ -274,6 +275,8 @@ class LessonRead(BaseModel):
     duration_seconds: Optional[int] = None
     position: int = 0
     published_at: Optional[datetime] = None
+    members_only: bool = False
+    locked: bool = False
 
     class Config:
         from_attributes = True
@@ -284,6 +287,7 @@ class CourseDetailRead(CourseRead):
     requirements: list[str] = []
     youtube_playlist_id: Optional[str] = None
     lessons: list[LessonRead] = []
+    has_exclusive_access: bool = False
 
 
 class CourseAdminRead(CourseRead):
@@ -307,6 +311,14 @@ class CourseAdminWrite(BaseModel):
     requirements: str = Field(default="", max_length=3000)
     sort_order: int = 0
     is_published: bool = True
+    members_only: bool = False
+
+
+class LessonAdminPatch(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=250)
+    section: Optional[str] = Field(default=None, max_length=120)
+    members_only: Optional[bool] = None
+    is_published: Optional[bool] = None
 
 
 class LessonAdminWrite(BaseModel):
@@ -316,6 +328,7 @@ class LessonAdminWrite(BaseModel):
     youtube_url: str = Field(max_length=300)  # lien YouTube ou ID de la vidéo
     position: Optional[int] = None
     is_published: bool = True
+    members_only: bool = False
 
 
 class LessonProgressWrite(BaseModel):
@@ -647,3 +660,140 @@ class PaymentRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- H-Learning : bouquets -------------------------------------------------
+
+class PlanRead(BaseModel):
+    id: int
+    code: str
+    name: str
+    audience: str
+    tagline: str = ""
+    features: list[str] = []
+    price_monthly: float
+    price_yearly: float
+    yearly_saving_pct: int = 0
+    per_seat: bool = False
+    min_seats: int = 1
+    max_seats: int = 1
+    includes_inperson: bool = True
+    includes_exclusive: bool = True
+    highlight: bool = False
+
+
+class CurrencyRead(BaseModel):
+    code: str
+    label: str = ""
+    symbol: str = ""
+    rate: float
+
+
+class PlansResponse(BaseModel):
+    pivot: str
+    test_mode: bool = True  # vrai tant qu'aucun fournisseur de paiement réel n'est configuré
+    currencies: list[CurrencyRead]
+    plans: list[PlanRead]
+
+
+class PlanAdminWrite(BaseModel):
+    code: str = Field(min_length=2, max_length=40, pattern=r"^[a-z0-9_-]+$")
+    name: str = Field(min_length=2, max_length=80)
+    audience: str = Field(default="individual", pattern=r"^(individual|pro|team)$")
+    tagline: str = Field(default="", max_length=200)
+    features: str = Field(default="", max_length=3000)  # une entrée par ligne
+    price_monthly: float = Field(ge=0)
+    price_yearly: float = Field(ge=0)
+    per_seat: bool = False
+    min_seats: int = Field(default=1, ge=1, le=10000)
+    max_seats: int = Field(default=1, ge=1, le=10000)
+    includes_inperson: bool = True
+    includes_exclusive: bool = True
+    highlight: bool = False
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class PlanAdminRead(PlanAdminWrite):
+    id: int
+    subscribers: int = 0
+
+
+class CurrencyWrite(BaseModel):
+    code: str = Field(min_length=3, max_length=3)
+    label: str = Field(default="", max_length=60)
+    symbol: str = Field(default="", max_length=8)
+    rate: float = Field(gt=0)
+
+
+class CurrenciesWrite(BaseModel):
+    currencies: list[CurrencyWrite]
+
+
+class CheckoutCreate(BaseModel):
+    plan_code: str
+    period: str = Field(default="month", pattern=r"^(month|year)$")
+    seats: int = Field(default=1, ge=1, le=10000)
+    org_name: Optional[str] = Field(default=None, max_length=160)
+    method: str = Field(pattern=r"^(zamtel_money|mtn_momo|airtel_money|card)$")
+    phone: Optional[str] = Field(default=None, max_length=30)
+    currency: str = Field(default="ZMW", min_length=3, max_length=3)
+
+
+class SubscriptionMemberRead(BaseModel):
+    id: int
+    email: str
+
+    class Config:
+        from_attributes = True
+
+
+class SubscriptionRead(BaseModel):
+    id: int
+    reference: str
+    plan_code: str
+    plan_name: str
+    period: str
+    seats: int = 1
+    org_name: Optional[str] = None
+    amount_pivot: float
+    pivot_currency: str
+    display_currency: str = "ZMW"
+    includes_inperson: bool = True
+    includes_exclusive: bool = True
+    method: str
+    status: str
+    simulated: bool = True
+    failure_reason: Optional[str] = None
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    days_left: Optional[int] = None
+    members: list[SubscriptionMemberRead] = []
+    is_owner: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class MemberAdd(BaseModel):
+    email: EmailStr
+
+
+class AdminSubscriptionRead(SubscriptionRead):
+    user_email: Optional[str] = None
+    user_name: Optional[str] = None
+
+
+class AdminManualSubscription(BaseModel):
+    user_email: EmailStr
+    plan_code: str
+    period: str = Field(default="month", pattern=r"^(month|year)$")
+    seats: int = Field(default=1, ge=1, le=10000)
+    org_name: Optional[str] = Field(default=None, max_length=160)
+    note: Optional[str] = Field(default=None, max_length=200)
+
+
+class AdminSubscriptionStatus(BaseModel):
+    status: str = Field(pattern=r"^(active|cancelled|expired)$")

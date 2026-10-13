@@ -181,6 +181,7 @@ class PaymentMethod(str, Enum):
     card = "card"
     airtel_money = "airtel_money"
     mtn_momo = "mtn_momo"
+    zamtel_money = "zamtel_money"
 
 
 class PaymentStatus(str, Enum):
@@ -279,6 +280,9 @@ class Course(SQLModel, table=True):
     requirements: str = ""
     sort_order: int = Field(default=0)
     is_published: bool = Field(default=True)
+    # Cours réservé aux abonnés d'un bouquet (contenu exclusif) : ses leçons
+    # ne sont visibles que pour un compte avec un bouquet actif.
+    members_only: bool = Field(default=False)
     synced_at: Optional[datetime] = None
 
 
@@ -296,6 +300,7 @@ class Lesson(SQLModel, table=True):
     position: int = Field(default=0)
     source: str = Field(default="youtube")  # youtube (synchronisée) | manual
     is_published: bool = Field(default=True)
+    members_only: bool = Field(default=False)
     published_at: Optional[datetime] = None
 
 
@@ -473,3 +478,73 @@ class ContactMessage(SQLModel, table=True):
     admin_reply: Optional[str] = None
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# --- H-Learning : bouquets (abonnements) --------------------------------
+
+class LearningPlan(SQLModel, table=True):
+    """Un bouquet H-Learning (Individuel, Pro, Équipe...). Les prix sont
+    exprimés dans la monnaie pivot (config `learning_pivot_currency`) ; les
+    autres devises sont des conversions d'affichage (CurrencyRate)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    name: str
+    audience: str = Field(default="individual")  # individual | pro | team
+    tagline: str = ""
+    features: str = ""  # une entrée par ligne
+    price_monthly: float = 0
+    price_yearly: float = 0
+    per_seat: bool = Field(default=False)  # prix par personne (bouquet équipe)
+    min_seats: int = Field(default=1)
+    max_seats: int = Field(default=1)
+    includes_inperson: bool = Field(default=True)
+    includes_exclusive: bool = Field(default=True)
+    highlight: bool = Field(default=False)
+    is_active: bool = Field(default=True)
+    sort_order: int = Field(default=0)
+
+
+class CurrencyRate(SQLModel, table=True):
+    """Taux d'affichage : `rate` = nombre d'unités de cette devise pour
+    1 unité de la monnaie pivot. Le paiement reste facturé dans le pivot."""
+    code: str = Field(primary_key=True)
+    label: str = ""
+    symbol: str = ""
+    rate: float = 1.0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class LearningSubscription(SQLModel, table=True):
+    """Achat d'un bouquet. `status` : pending | active | expired | cancelled | failed."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    reference: str = Field(index=True, unique=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    plan_id: int = Field(foreign_key="learningplan.id")
+    plan_code: str
+    plan_name: str
+    period: str = Field(default="month")  # month | year
+    seats: int = Field(default=1)
+    org_name: Optional[str] = None
+    amount_pivot: float = 0
+    pivot_currency: str = "ZMW"
+    display_currency: str = "ZMW"
+    includes_inperson: bool = Field(default=True)
+    includes_exclusive: bool = Field(default=True)
+    method: str = "mobile"
+    phone_number: Optional[str] = None
+    provider_reference: Optional[str] = None
+    simulated: bool = Field(default=True)
+    status: str = Field(default="pending", index=True)
+    failure_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    paid_at: Optional[datetime] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+
+class LearningSubscriptionMember(SQLModel, table=True):
+    """Personne ajoutée par le titulaire d'un bouquet équipe (par e-mail)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    subscription_id: int = Field(foreign_key="learningsubscription.id", index=True)
+    email: str = Field(index=True)
+    added_at: datetime = Field(default_factory=datetime.utcnow)

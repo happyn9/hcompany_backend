@@ -42,6 +42,8 @@ def charge(
         return _charge_airtel_money(amount, reference, phone_number)
     if method == PaymentMethod.mtn_momo:
         return _charge_mtn_momo(amount, reference, phone_number)
+    if method == PaymentMethod.zamtel_money:
+        return _charge_zamtel_money(amount, reference, phone_number)
     return PaymentResult(success=False, failure_reason=f"Méthode de paiement non supportée : {method}")
 
 
@@ -107,4 +109,18 @@ def _charge_mtn_momo(amount: float, reference: str, phone_number: Optional[str])
         "Clés MTN MoMo renseignées mais l'appel réel n'est pas encore "
         "implémenté — voir le plan en commentaire ci-dessus une fois prêt à "
         "brancher le compte marchand MTN."
+    )
+
+
+def _charge_zamtel_money(amount: float, reference: str, phone_number: Optional[str]) -> PaymentResult:
+    if not settings.zamtel_money_api_key or not settings.zamtel_money_api_secret:
+        return _simulate(reference)
+
+    # --- Intégration réelle Zamtel Money (à écrire avec la doc du compte marchand) ---
+    # Même schéma que les autres opérateurs : demande de paiement vers le
+    # téléphone avec `reference` comme identifiant de transaction, puis
+    # vérification du statut (ou callback) avant de confirmer.
+    raise NotImplementedError(
+        "Clés Zamtel Money renseignées mais l'appel réel n'est pas encore "
+        "implémenté — à brancher avec la documentation du compte marchand."
     )

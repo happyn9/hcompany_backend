@@ -26,6 +26,7 @@ from app.schemas import (
     CourseAdminWrite,
     CourseDetailRead,
     CourseRead,
+    LessonAdminPatch,
     LessonAdminWrite,
     LessonProgressRead,
     LessonProgressWrite,
@@ -35,6 +36,7 @@ from app.schemas import (
     TrainingRegistrationStatusUpdate,
     _lines,
 )
+from app.services.learning_access import has_exclusive_access
 from app.services.notifications import send_email
 from app.services.rate_limit import limiter
 from app.services.youtube import (
@@ -79,7 +81,10 @@ def sync_course_from_youtube(session: Session, course: Course) -> int:
         seen.add(item["youtube_id"])
         lesson = existing.get(item["youtube_id"])
         if lesson is None:
-            lesson = Lesson(course_id=course.id, youtube_id=item["youtube_id"], source="youtube", title=item["title"])
+            lesson = Lesson(
+                course_id=course.id, youtube_id=item["youtube_id"], source="youtube",
+                title=item["title"], members_only=course.members_only,
+            )
         lesson.title = item["title"] or lesson.title
         lesson.description = item.get("description") or lesson.description
         lesson.thumbnail_url = thumbnail_for(item["youtube_id"])
@@ -137,6 +142,7 @@ def _course_read(course: Course, stats: dict[int, tuple[int, int]]) -> CourseRea
     return CourseRead(
         id=course.id, title=course.title, level=course.level, description=course.description,
         category=course.category, image_url=course.image_url, lesson_count=n, total_seconds=total,
+        members_only=course.members_only,
     )
 
 
@@ -150,7 +156,12 @@ def list_courses(session: Session = Depends(get_session)):
 
 
 @router.get("/courses/{course_id}", response_model=CourseDetailRead)
-def get_course(course_id: int, background: BackgroundTasks, session: Session = Depends(get_session)):
+def get_course(
+    course_id: int,
+    background: BackgroundTasks,
+    session: Session = Depends(get_session),
+    user: Optional[User] = Depends(get_optional_user),
+):
     course = session.get(Course, course_id)
     if not course or not course.is_published:
         raise HTTPException(status_code=404, detail="Cours introuvable.")
@@ -162,12 +173,26 @@ def get_course(course_id: int, background: BackgroundTasks, session: Session = D
         .order_by(Lesson.position, Lesson.id)
     ).all()
     base = _course_read(course, {course.id: (len(lessons), sum(l.duration_seconds or 0 for l in lessons))})
+    unlocked = has_exclusive_access(session, user)
+    items = []
+    for l in lessons:
+        item = LessonRead.model_validate(l)
+        item.members_only = bool(l.members_only or course.members_only)
+        if item.members_only and not unlocked:
+            # Contenu exclusif : ni l'identifiant vidéo ni la miniature
+            # (qui le révélerait) ne sont envoyés sans bouquet actif.
+            item.locked = True
+            item.youtube_id = ""
+            item.thumbnail_url = None
+            item.description = ""
+        items.append(item)
     return CourseDetailRead(
         **base.model_dump(),
         outcomes=_lines(course.outcomes),
         requirements=_lines(course.requirements),
         youtube_playlist_id=course.youtube_playlist_id,
-        lessons=[LessonRead.model_validate(l) for l in lessons],
+        lessons=items,
+        has_exclusive_access=unlocked,
     )
 
 
@@ -413,6 +438,7 @@ def _apply_course_payload(course: Course, payload: CourseAdminWrite) -> None:
     course.requirements = payload.requirements.strip()
     course.sort_order = payload.sort_order
     course.is_published = payload.is_published
+    course.members_only = payload.members_only
 
 
 @router.get("/admin/courses", response_model=List[CourseAdminRead])
@@ -523,7 +549,7 @@ def admin_add_lesson(
         course_id=course_id, title=payload.title.strip(), description=payload.description.strip(),
         section=payload.section.strip(), youtube_id=video_id, thumbnail_url=thumbnail_for(video_id),
         position=payload.position if payload.position is not None else (last or 0) + 1,
-        source="manual", is_published=payload.is_published,
+        source="manual", is_published=payload.is_published, members_only=payload.members_only,
     )
     session.add(lesson)
     session.commit()
@@ -543,3 +569,24 @@ def admin_delete_lesson(
     session.exec(delete(LessonProgress).where(LessonProgress.lesson_id == lesson_id))
     session.delete(lesson)
     session.commit()
+
+
+@router.patch("/admin/lessons/{lesson_id}", response_model=LessonRead)
+def admin_update_lesson(
+    lesson_id: int,
+    payload: LessonAdminPatch,
+    session: Session = Depends(get_session),
+    _admin: User = Depends(get_current_admin),
+):
+    """Bascule une leçon en contenu exclusif (ou la rend publique), ou la
+    dépublie. Sert aussi à corriger un titre importé de YouTube."""
+    lesson = session.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Leçon introuvable.")
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(lesson, key, value)
+    session.add(lesson)
+    session.commit()
+    session.refresh(lesson)
+    return lesson
