@@ -24,6 +24,8 @@ from app.routers import auth, partners, learning, learning_plans, products, cont
 from app.lukondo.routers import parcels as lukondo_parcels
 from app.lukondo.routers import rooms as lukondo_rooms
 from app.lukondo.routers import bus as lukondo_bus
+from app.shopping.routers import admin as shopping_admin, agency as shopping_agency, buyer as shopping_buyer, catalog as shopping_catalog, seller as shopping_seller
+from app.shopping.services import seed_shopping
 from app.services.rate_limit import limiter
 
 SEED_COURSES = [
@@ -117,6 +119,7 @@ def seed_data() -> None:
             session.flush()
         _ensure_default_playlist_course(session)
         seed_learning_plans(session)
+        seed_shopping(session)
         if not session.exec(select(Product)).first():
             session.add_all([Product(**p) for p in SEED_PRODUCTS])
 
@@ -220,6 +223,11 @@ app.include_router(services.router)
 app.include_router(lukondo_parcels.router)
 app.include_router(lukondo_rooms.router)
 app.include_router(lukondo_bus.router)
+app.include_router(shopping_catalog.router)
+app.include_router(shopping_buyer.router)
+app.include_router(shopping_seller.router)
+app.include_router(shopping_agency.router)
+app.include_router(shopping_admin.router)
 
 
 @app.get("/")

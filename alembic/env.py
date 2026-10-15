@@ -9,6 +9,7 @@ from sqlmodel import SQLModel
 from app.config import settings
 from app import models  # noqa: F401
 from app.lukondo import models as lukondo_models  # noqa: F401
+from app.shopping import models as shopping_models  # noqa: F401
 
 config = context.config
 

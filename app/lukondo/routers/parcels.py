@@ -102,6 +102,9 @@ def update_parcel_status(
         raise HTTPException(status_code=404, detail="Colis introuvable.")
     parcel.status = payload.status
     session.add(parcel)
+    # Si le colis vient d'une commande H-Shopping, le suivi acheteur suit.
+    from app.shopping.services import sync_order_from_parcel
+    sync_order_from_parcel(session, parcel)
     session.commit()
     session.refresh(parcel)
     # TODO: déclencher la notification WhatsApp/email au destinataire ici
