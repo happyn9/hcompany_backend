@@ -333,7 +333,10 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_shoporderitem_product_id'), ['product_id'], unique=False)
 
     # H-Shopping est désormais ouvert : on l'active dans le catalogue des services.
-    op.execute("UPDATE servicecatalogitem SET disabled = 0 WHERE key = 'h_shopping'")
+    op.get_bind().execute(
+      sa.text("UPDATE servicecatalogitem SET disabled = :off WHERE key = 'h_shopping'"),
+      {"off": False},
+    )
     # ### end Alembic commands ###
 
 
