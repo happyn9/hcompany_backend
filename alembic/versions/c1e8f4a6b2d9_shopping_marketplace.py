@@ -334,8 +334,8 @@ def upgrade() -> None:
 
     # H-Shopping est désormais ouvert : on l'active dans le catalogue des services.
     op.get_bind().execute(
-      sa.text("UPDATE servicecatalogitem SET disabled = :off WHERE key = 'h_shopping'"),
-      {"off": False},
+        sa.text("UPDATE servicecatalogitem SET disabled = :off WHERE key = 'h_shopping'"),
+        {"off": False},
     )
     # ### end Alembic commands ###
 

@@ -26,6 +26,7 @@ from app.lukondo.routers import rooms as lukondo_rooms
 from app.lukondo.routers import bus as lukondo_bus
 from app.shopping.routers import admin as shopping_admin, agency as shopping_agency, buyer as shopping_buyer, catalog as shopping_catalog, seller as shopping_seller
 from app.shopping.services import seed_shopping
+from app.lodging.routers import admin as lodging_admin, catalog as lodging_catalog, guest as lodging_guest, host as lodging_host
 from app.services.rate_limit import limiter
 
 SEED_COURSES = [
@@ -228,6 +229,10 @@ app.include_router(shopping_buyer.router)
 app.include_router(shopping_seller.router)
 app.include_router(shopping_agency.router)
 app.include_router(shopping_admin.router)
+app.include_router(lodging_catalog.router)
+app.include_router(lodging_guest.router)
+app.include_router(lodging_host.router)
+app.include_router(lodging_admin.router)
 
 
 @app.get("/")
