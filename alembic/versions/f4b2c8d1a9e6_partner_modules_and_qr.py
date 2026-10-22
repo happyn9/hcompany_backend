@@ -56,8 +56,8 @@ def upgrade() -> None:
     for module, table, col in (("lodging", "lodgehost", "user_id"), ("transport", "transportoperator", "user_id"), ("shopping", "shop", "owner_id")):
         conn.execute(sa.text(
             f"INSERT INTO partnermodule (user_id, module, active, activated_at) "
-            f"SELECT DISTINCT {col}, :m, 1, CURRENT_TIMESTAMP FROM {table}"
-        ), {"m": module})
+            f"SELECT DISTINCT {col}, :m, :a, CURRENT_TIMESTAMP FROM {table}"
+        ), {"m": module, "a": True})
 
 
 def downgrade() -> None:
