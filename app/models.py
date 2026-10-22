@@ -548,3 +548,31 @@ class LearningSubscriptionMember(SQLModel, table=True):
     subscription_id: int = Field(foreign_key="learningsubscription.id", index=True)
     email: str = Field(index=True)
     added_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# --- Centralisation : modules activés par un partenaire ---------------------
+
+class PartnerModule(SQLModel, table=True):
+    """Un module H-Company (logement, transport, shopping, learning) débloqué par
+    un partenaire APPROUVÉ depuis son dashboard. Une seule ligne par (user, module)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    module: str = Field(index=True)
+    active: bool = True
+    activated_at: datetime = Field(default_factory=datetime.utcnow)
+    deactivated_at: Optional[datetime] = None
+
+
+class QrSession(SQLModel, table=True):
+    """Appairage par QR (type WhatsApp Web) : un appareil non connecté affiche
+    `code`, un appareil connecté (Rafiki ou le site) l'approuve ; l'appareil
+    d'origine récupère alors un jeton d'accès avec son `secret`, une seule fois."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    secret_hash: str
+    device_label: str = ""
+    status: str = Field(default="pending", index=True)  # pending | approved | consumed | rejected
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime
+    approved_at: Optional[datetime] = None

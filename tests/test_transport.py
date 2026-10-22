@@ -16,7 +16,7 @@ from sqlmodel import SQLModel, Session  # noqa: E402
 from app.database import engine  # noqa: E402
 from app.deps import get_current_admin, get_current_user, get_optional_user  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import User, UserRole  # noqa: E402
+from app.models import PartnerModule, User, UserRole  # noqa: E402
 from app.transport.models import TransportBooking, TransportTrip  # noqa: E402
 from app.transport.services import expire_overdue, now_local  # noqa: E402
 
@@ -34,6 +34,8 @@ def c():
             s.commit()
             s.refresh(u)
             users[key] = u.id
+        s.add(PartnerModule(user_id=users["op"], module="transport"))
+        s.commit()
     state = {"as": "op"}
 
     def _user(uid):

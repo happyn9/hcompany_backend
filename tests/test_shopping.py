@@ -16,7 +16,7 @@ from sqlmodel import SQLModel, Session, select  # noqa: E402
 from app.database import engine  # noqa: E402
 from app.deps import get_current_admin, get_current_partner, get_current_user, get_optional_user  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import PartnerApplication, PartnerStatus, User, UserRole  # noqa: E402
+from app.models import PartnerApplication, PartnerModule, PartnerStatus, User, UserRole  # noqa: E402
 from app.shopping.models import ShopAgency, ShopCategory  # noqa: E402
 from app.shopping.services import seed_shopping  # noqa: E402
 
@@ -39,6 +39,8 @@ def ctx():
         s.add(partner)
         s.commit()
         s.refresh(partner)
+        s.add(PartnerModule(user_id=users["seller"], module="shopping"))
+        s.commit()
         seed_shopping(s)
         agency_partner = partner.id
     state = {"as": "seller"}

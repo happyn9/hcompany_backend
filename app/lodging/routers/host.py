@@ -22,6 +22,7 @@ from app.lodging.services import (
     add_event, availability_conflict, clean_amenities, daterange, expire_overdue, get_float, host_accept, notify_user,
     refresh_review_stats, settle_refund, slugify, unique_slug, wallet,
 )
+from app.routers.partner_modules import require_module
 from app.models import PartnerApplication, PartnerStatus, User, UserRole
 from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 
@@ -101,6 +102,7 @@ def _apply_host(session: Session, h: LodgeHost, payload: S.HostWrite, user: User
 def save_host(payload: S.HostWrite, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     h = _host(session, user, required=False)
     if not h:
+        require_module(session, user, "lodging")
         partner = session.exec(select(PartnerApplication).where(PartnerApplication.user_id == user.id, PartnerApplication.status == PartnerStatus.approved)).first()
         h = LodgeHost(user_id=user.id, display_name=payload.display_name, partner_application_id=partner.id if partner else None)
     _apply_host(session, h, payload, user)

@@ -20,7 +20,7 @@ from app.deps import get_current_admin, get_current_user, get_optional_user  # n
 from app.lodging.models import Booking  # noqa: E402
 from app.lodging.services import expire_overdue  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import User, UserRole  # noqa: E402
+from app.models import PartnerModule, User, UserRole  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 API = "/api/v1/lodging"
@@ -41,6 +41,8 @@ def ctx():
             s.commit()
             s.refresh(u)
             users[key] = u.id
+        s.add(PartnerModule(user_id=users["host"], module="lodging"))
+        s.commit()
     state = {"as": "host"}
 
     def _user(uid):

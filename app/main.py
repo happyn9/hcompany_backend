@@ -20,7 +20,7 @@ from app.models import Course, Product, User, UserRole
 from app.routers.learning import sync_course_from_youtube
 from app.routers.learning_plans import seed_learning_plans
 from app.services.youtube import parse_playlist_id
-from app.routers import auth, partners, learning, learning_plans, products, contact, onboarding, notifications, services
+from app.routers import auth, partners, learning, learning_plans, products, contact, onboarding, notifications, services, partner_modules, qr_login
 from app.lukondo.routers import parcels as lukondo_parcels
 from app.lukondo.routers import rooms as lukondo_rooms
 from app.lukondo.routers import bus as lukondo_bus
@@ -215,6 +215,8 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(auth.router)
 app.include_router(partners.router)
+app.include_router(partner_modules.router)
+app.include_router(qr_login.router)
 app.include_router(learning.router)
 app.include_router(learning_plans.router)
 app.include_router(products.router)

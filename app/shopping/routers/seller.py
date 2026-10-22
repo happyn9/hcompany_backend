@@ -12,6 +12,7 @@ from sqlmodel import Session, func, select
 
 from app.database import get_session
 from app.deps import get_current_user
+from app.routers.partner_modules import require_module
 from app.models import PartnerApplication, PartnerStatus, User, UserRole
 from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 from app.shopping import schemas as S
@@ -87,6 +88,7 @@ def my_shops(session: Session = Depends(get_session), user: User = Depends(get_c
 
 @router.post("/shops", response_model=S.ShopOwnerRead, status_code=201)
 def create_shop(payload: S.ShopCreate, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    require_module(session, user, "shopping")
     if session.exec(select(func.count(Shop.id)).where(Shop.owner_id == user.id)).one() >= MAX_SHOPS_PER_USER:
         raise HTTPException(status_code=409, detail=f"Vous pouvez gérer jusqu'à {MAX_SHOPS_PER_USER} boutiques.")
     if payload.dispatch_agency_id and not session.get(ShopAgency, payload.dispatch_agency_id):

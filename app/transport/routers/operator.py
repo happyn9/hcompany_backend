@@ -10,6 +10,7 @@ from sqlmodel import Session, func, select
 from app.database import get_session
 from app.deps import get_current_user
 from app.models import User
+from app.routers.partner_modules import require_module
 from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 from app.transport import schemas as S
 from app.transport import views
@@ -68,6 +69,7 @@ def me(session: Session = Depends(get_session), user: User = Depends(get_current
 def create(payload: S.OperatorWrite, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     if _op(session, user, required=False):
         raise HTTPException(status_code=409, detail="Vous avez déjà une agence.")
+    require_module(session, user, "transport")
     op = TransportOperator(user_id=user.id, name=payload.name)
     _apply_profile(op, payload)
     auto_approve_partner(session, user, op)
