@@ -441,7 +441,8 @@ def dispute_window_open(session: Session, b: Booking) -> bool:
         return False
     hours = int(get_float(session, "dispute_window_hours"))
     start = datetime.combine(b.check_in, datetime.min.time())
-    return start <= datetime.utcnow() <= start + timedelta(hours=hours)
+    now_cat = datetime.utcnow() + timedelta(hours=2)  # les dates de séjour sont en heure locale (Zambie, UTC+2)
+    return start <= now_cat <= start + timedelta(hours=hours)
 
 
 # --- Avis ----------------------------------------------------------------------

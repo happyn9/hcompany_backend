@@ -7,7 +7,7 @@ from sqlmodel import Session, func, select
 from app.models import User
 from app.transport import schemas as S
 from app.transport.models import (
-    TransportBooking, TransportEvent, TransportOperator, TransportPassenger, TransportReview, TransportTrip,
+    TransportBooking, TransportBus, TransportEvent, TransportOperator, TransportPassenger, TransportReview, TransportTrip,
 )
 from app.transport.services import (
     dispute_window_open, get_float, is_bookable, now_local, refund_for_cancellation, seats_left, taken_seats, wallet,
@@ -24,13 +24,23 @@ def operator_public(session: Session, op: TransportOperator) -> S.OperatorPublic
                             rating_avg=op.rating_avg, rating_count=op.rating_count, trips_count=int(n))
 
 
+def bus_read(session: Session, bus: TransportBus, *, with_count: bool = False) -> S.BusRead:
+    upcoming = 0
+    if with_count:
+        upcoming = int(session.exec(select(func.count(TransportTrip.id)).where(TransportTrip.bus_id == bus.id, TransportTrip.status == "scheduled")).one())
+    return S.BusRead(id=bus.id, name=bus.name, plate=bus.plate, bus_type=bus.bus_type, layout=bus.layout, seats_total=bus.seats_total,
+                     amenities=csv(bus.amenities), color=bus.color, is_active=bus.is_active, upcoming_trips=upcoming)
+
+
 def trip_card(session: Session, t: TransportTrip, op: Optional[TransportOperator] = None) -> S.TripCard:
     op = op or session.get(TransportOperator, t.operator_id)
     reason = is_bookable(session, t)
     left = seats_left(session, t)
     if not reason and left <= 0:
         reason = "Complet."
+    bus = session.get(TransportBus, t.bus_id) if t.bus_id else None
     return S.TripCard(
+        bus=bus_read(session, bus) if bus else None, bus_layout=bus.layout if bus else "2+2",
         id=t.id, origin=t.origin, destination=t.destination, origin_stop=t.origin_stop, destination_stop=t.destination_stop,
         departure_at=t.departure_at, arrival_at=t.arrival_at, duration_minutes=int((t.arrival_at - t.departure_at).total_seconds() // 60),
         price=t.price, bus_type=t.bus_type, amenities=csv(t.amenities), seats_total=t.seats_total, seats_left=left,

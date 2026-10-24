@@ -36,4 +36,7 @@ def resolve_local_user(session: Session, uid: int, email: str) -> User:
     session.add(user)
     session.commit()
     session.refresh(user)
+    from app.agents import apply_invite  # invitation d'agent posée par l'admin
+    apply_invite(session, user)
+    session.refresh(user)
     return user

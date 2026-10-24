@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.transport.models import BUS_TYPES
+from app.transport.models import BUS_LAYOUTS, BUS_TYPES
 
 
 def _clean(v: Optional[str]) -> str:
@@ -15,6 +15,45 @@ class Stripped(BaseModel):
     @classmethod
     def _strip(cls, v):
         return v.strip() if isinstance(v, str) else v
+
+
+# --- Flotte ---------------------------------------------------------------------
+
+class BusWrite(Stripped):
+    name: str = Field(min_length=2, max_length=60)
+    plate: str = Field(min_length=3, max_length=20)
+    bus_type: str = "standard"
+    layout: str = "2+2"
+    seats_total: int = Field(ge=4, le=80)
+    amenities: list[str] = []
+    color: str = Field(default="#c89a3d", pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @field_validator("bus_type")
+    @classmethod
+    def _t(cls, v):
+        if v not in BUS_TYPES:
+            raise ValueError("Type de bus inconnu.")
+        return v
+
+    @field_validator("layout")
+    @classmethod
+    def _l(cls, v):
+        if v not in BUS_LAYOUTS:
+            raise ValueError("Disposition inconnue.")
+        return v
+
+
+class BusRead(BaseModel):
+    id: int
+    name: str
+    plate: str
+    bus_type: str
+    layout: str
+    seats_total: int
+    amenities: list[str] = []
+    color: str = "#c89a3d"
+    is_active: bool = True
+    upcoming_trips: int = 0
 
 
 # --- Lecture publique ---------------------------------------------------------
@@ -44,6 +83,8 @@ class TripCard(BaseModel):
     amenities: list[str] = []
     seats_total: int
     seats_left: int
+    bus_layout: str = "2+2"
+    bus: Optional[BusRead] = None
     border_crossing: bool = False
     bookable: bool = True
     closed_reason: Optional[str] = None
@@ -224,7 +265,8 @@ class TripWrite(Stripped):
     departure_at: datetime
     arrival_at: datetime
     price: float = Field(gt=0, le=100000)
-    seats_total: int = Field(ge=1, le=80)
+    bus_id: Optional[int] = None
+    seats_total: Optional[int] = Field(default=None, ge=1, le=80)
     bus_type: str = "standard"
     amenities: list[str] = []
     luggage_note: str = Field(default="", max_length=300)
@@ -240,6 +282,8 @@ class TripWrite(Stripped):
 
     @model_validator(mode="after")
     def _times(self):
+        if self.bus_id is None and self.seats_total is None:
+            raise ValueError("Choisissez un bus ou indiquez le nombre de sièges.")
         if self.origin.strip().lower() == self.destination.strip().lower():
             raise ValueError("Le départ et l'arrivée doivent être différents.")
         if self.arrival_at <= self.departure_at:

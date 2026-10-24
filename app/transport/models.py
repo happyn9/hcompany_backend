@@ -46,9 +46,28 @@ class TransportOperator(SQLModel, table=True):
     approved_at: Optional[datetime] = None
 
 
+BUS_LAYOUTS = ("2+2", "2+1", "1+1")
+
+
+class TransportBus(SQLModel, table=True):
+    """Un bus de la flotte d'une agence : plaque, disposition des sièges, équipements."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    operator_id: int = Field(foreign_key="transportoperator.id", index=True)
+    name: str
+    plate: str = Field(index=True)
+    bus_type: str = "standard"
+    layout: str = "2+2"  # sièges par rangée : gauche+droite
+    seats_total: int = 50
+    amenities: str = ""
+    color: str = "#c89a3d"  # couleur de carrosserie (vue 3D)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TransportTrip(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     operator_id: int = Field(foreign_key="transportoperator.id", index=True)
+    bus_id: Optional[int] = Field(default=None, foreign_key="transportbus.id", index=True)
     origin: str = Field(index=True)
     destination: str = Field(index=True)
     origin_stop: str = ""

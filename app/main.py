@@ -27,6 +27,8 @@ from app.lukondo.routers import bus as lukondo_bus
 from app.shopping.routers import admin as shopping_admin, agency as shopping_agency, buyer as shopping_buyer, catalog as shopping_catalog, seller as shopping_seller
 from app.shopping.services import seed_shopping
 from app.transport.routers import admin as transport_admin, operator as transport_operator, public as transport_public
+from app.transport import cargo as transport_cargo
+from app import agents as agents_module
 from app.lodging.routers import admin as lodging_admin, catalog as lodging_catalog, guest as lodging_guest, host as lodging_host
 from app.services.rate_limit import limiter
 
@@ -203,7 +205,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # détails d'implémentation au client en cas de payload malformé.
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "Données invalides.", "errors": exc.errors()},
+        # `ctx` peut contenir l'exception d'origine (ValueError d'un validateur
+        # personnalisé), non sérialisable en JSON : on ne garde que le message.
+        content={"detail": "Données invalides.", "errors": [{k: v for k, v in e.items() if k != "ctx"} for e in exc.errors()]},
     )
 
 
@@ -239,6 +243,11 @@ app.include_router(lodging_admin.router)
 app.include_router(transport_public.router)
 app.include_router(transport_operator.router)
 app.include_router(transport_admin.router)
+app.include_router(agents_module.admin)
+app.include_router(agents_module.agent)
+app.include_router(agents_module.support)
+app.include_router(transport_cargo.public)
+app.include_router(transport_cargo.operator)
 
 
 @app.get("/")

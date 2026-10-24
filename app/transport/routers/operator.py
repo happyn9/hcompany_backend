@@ -15,7 +15,7 @@ from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 from app.transport import schemas as S
 from app.transport import views
 from app.transport.models import (
-    TransportBooking, TransportOperator, TransportPassenger, TransportPayout, TransportReview, TransportTrip,
+    TransportBooking, TransportBus, TransportOperator, TransportPassenger, TransportPayout, TransportReview, TransportTrip,
 )
 from app.transport.services import (
     add_event, auto_approve_partner, clean_amenities, expire_overdue, get_float, notify_user, now_local, refresh_review_stats,
@@ -105,12 +105,90 @@ def overview(session: Session = Depends(get_session), user: User = Depends(get_c
 
 # --- Départs -------------------------------------------------------------------
 
-def _apply_trip(t: TransportTrip, p: S.TripWrite) -> None:
+def _apply_trip(t: TransportTrip, p: S.TripWrite, session: Optional[Session] = None, op: Optional[TransportOperator] = None) -> None:
+    seats, btype, amen = p.seats_total, p.bus_type, p.amenities
+    t.bus_id = None
+    if p.bus_id is not None:
+        bus = session.get(TransportBus, p.bus_id) if session else None
+        if not bus or not op or bus.operator_id != op.id or not bus.is_active:
+            raise HTTPException(status_code=422, detail="Bus introuvable dans votre flotte.")
+        dep, arr = p.departure_at.replace(tzinfo=None), p.arrival_at.replace(tzinfo=None)
+        gap = timedelta(hours=2)  # calcul en Python : l'arithmétique de dates en SQL diffère entre SQLite et Postgres
+        clash = next((x for x in session.exec(select(TransportTrip).where(TransportTrip.bus_id == bus.id, TransportTrip.status == "scheduled", TransportTrip.id != (t.id or 0))).all()
+                      if x.departure_at < arr + gap and x.arrival_at + gap > dep), None)
+        if clash:
+            raise HTTPException(status_code=409, detail=f"Ce bus est déjà affecté au départ {clash.origin} → {clash.destination} du {clash.departure_at:%d/%m à %H:%M} (2 h de battement minimum).")
+        t.bus_id, seats, btype = bus.id, bus.seats_total, bus.bus_type
+        amen = p.amenities or [a for a in bus.amenities.split(",") if a]
     t.origin, t.destination = p.origin, p.destination
     t.origin_stop, t.destination_stop = p.origin_stop, p.destination_stop
     t.stops = ",".join(s.strip() for s in p.stops if s.strip())
-    t.departure_at, t.arrival_at, t.price, t.seats_total, t.bus_type = p.departure_at.replace(tzinfo=None), p.arrival_at.replace(tzinfo=None), p.price, p.seats_total, p.bus_type
-    t.amenities, t.luggage_note, t.notes, t.border_crossing = clean_amenities(p.amenities), p.luggage_note, p.notes, p.border_crossing
+    t.departure_at, t.arrival_at, t.price, t.seats_total, t.bus_type = p.departure_at.replace(tzinfo=None), p.arrival_at.replace(tzinfo=None), p.price, seats, btype
+    t.amenities, t.luggage_note, t.notes, t.border_crossing = clean_amenities(amen), p.luggage_note, p.notes, p.border_crossing
+
+
+# --- Flotte ----------------------------------------------------------------------
+
+def _apply_bus(bus: TransportBus, p: S.BusWrite) -> None:
+    bus.name, bus.plate, bus.bus_type, bus.layout = p.name, p.plate.upper(), p.bus_type, p.layout
+    bus.seats_total, bus.amenities, bus.color = p.seats_total, clean_amenities(p.amenities), p.color.lower()
+
+
+@router.get("/buses", response_model=list[S.BusRead])
+def buses(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    op = _op(session, user)
+    rows = session.exec(select(TransportBus).where(TransportBus.operator_id == op.id).order_by(TransportBus.name)).all()
+    return [views.bus_read(session, b, with_count=True) for b in rows]
+
+
+@router.post("/buses", response_model=S.BusRead, status_code=201)
+def create_bus(payload: S.BusWrite, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    op = _approved(session, user)
+    if session.exec(select(TransportBus).where(TransportBus.operator_id == op.id, TransportBus.plate == payload.plate.upper())).first():
+        raise HTTPException(status_code=409, detail="Un bus avec cette plaque existe déjà dans votre flotte.")
+    bus = TransportBus(operator_id=op.id, name=payload.name, plate=payload.plate.upper())
+    _apply_bus(bus, payload)
+    session.add(bus)
+    session.commit()
+    session.refresh(bus)
+    return views.bus_read(session, bus, with_count=True)
+
+
+def _bus(session: Session, bus_id: int, op: TransportOperator) -> TransportBus:
+    bus = session.get(TransportBus, bus_id)
+    if not bus or bus.operator_id != op.id:
+        raise HTTPException(status_code=404, detail="Bus introuvable.")
+    return bus
+
+
+@router.put("/buses/{bus_id}", response_model=S.BusRead)
+def update_bus(bus_id: int, payload: S.BusWrite, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    op = _approved(session, user)
+    bus = _bus(session, bus_id, op)
+    if payload.seats_total != bus.seats_total or payload.layout != bus.layout:
+        used = session.exec(select(func.count(TransportTrip.id)).where(TransportTrip.bus_id == bus.id, TransportTrip.status == "scheduled")).one()
+        if used:
+            raise HTTPException(status_code=409, detail="Ce bus a des départs programmés : sièges et disposition ne peuvent plus changer. Créez un autre bus ou annulez ces départs.")
+    _apply_bus(bus, payload)
+    session.add(bus)
+    session.commit()
+    return views.bus_read(session, bus, with_count=True)
+
+
+@router.delete("/buses/{bus_id}", status_code=204)
+def delete_bus(bus_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    op = _approved(session, user)
+    bus = _bus(session, bus_id, op)
+    used = session.exec(select(func.count(TransportTrip.id)).where(TransportTrip.bus_id == bus.id, TransportTrip.status == "scheduled")).one()
+    if used:
+        raise HTTPException(status_code=409, detail="Ce bus a des départs programmés. Annulez-les d'abord.")
+    ever = session.exec(select(func.count(TransportTrip.id)).where(TransportTrip.bus_id == bus.id)).one()
+    if ever:
+        bus.is_active = False
+        session.add(bus)
+    else:
+        session.delete(bus)
+    session.commit()
 
 
 @router.get("/trips", response_model=list[S.TripOwnerRead])
@@ -131,7 +209,7 @@ def create_trip(payload: S.TripWrite, session: Session = Depends(get_session), u
     if payload.departure_at.replace(tzinfo=None) <= now_local():
         raise HTTPException(status_code=422, detail="Le départ doit être dans le futur.")
     t = TransportTrip(operator_id=op.id, origin="", destination="", departure_at=payload.departure_at, arrival_at=payload.arrival_at, price=payload.price)
-    _apply_trip(t, payload)
+    _apply_trip(t, payload, session, op)
     session.add(t)
     session.commit()
     session.refresh(t)
@@ -147,10 +225,10 @@ def update_trip(trip_id: int, payload: S.TripWrite, session: Session = Depends(g
     sold = session.exec(select(func.count(TransportBooking.id)).where(TransportBooking.trip_id == t.id, TransportBooking.status.in_(("confirmed", "boarded", "completed", "disputed")))).one()
     if sold:
         changed = (payload.origin != t.origin or payload.destination != t.destination or payload.departure_at.replace(tzinfo=None) != t.departure_at
-                   or payload.arrival_at.replace(tzinfo=None) != t.arrival_at or payload.price != t.price or payload.seats_total < t.seats_total)
+                   or payload.arrival_at.replace(tzinfo=None) != t.arrival_at or payload.price != t.price or (payload.seats_total or t.seats_total) < t.seats_total or (payload.bus_id or None) != t.bus_id)
         if changed:
             raise HTTPException(status_code=409, detail="Des billets sont déjà vendus : le trajet, l'horaire, le prix et le nombre de sièges (à la baisse) ne peuvent plus changer. Annulez le départ pour rembourser les voyageurs.")
-    _apply_trip(t, payload)
+    _apply_trip(t, payload, session, op)
     session.add(t)
     session.commit()
     return views.trip_owner(session, t)
@@ -168,7 +246,7 @@ def duplicate(trip_id: int, days: list[int] = Body(...), session: Session = Depe
         n = TransportTrip(operator_id=op.id, origin=t.origin, destination=t.destination, origin_stop=t.origin_stop, destination_stop=t.destination_stop,
                           stops=t.stops, departure_at=t.departure_at + timedelta(days=d), arrival_at=t.arrival_at + timedelta(days=d), price=t.price,
                           seats_total=t.seats_total, bus_type=t.bus_type, amenities=t.amenities, luggage_note=t.luggage_note, notes=t.notes,
-                          border_crossing=t.border_crossing)
+                          border_crossing=t.border_crossing, bus_id=t.bus_id)
         session.add(n)
         out.append(n)
     session.commit()

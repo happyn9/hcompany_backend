@@ -351,6 +351,9 @@ def wallet(session: Session, operator_id: int) -> dict:
     pending = total(TransportBooking.operator_net, TransportBooking.operator_id == operator_id, TransportBooking.escrow_status == "held")
     out = total(TransportPayout.amount, TransportPayout.operator_id == operator_id, TransportPayout.status.in_(("requested", "paid")))
     paid = total(TransportPayout.amount, TransportPayout.operator_id == operator_id, TransportPayout.status == "paid")
+    from app.transport.cargo import cargo_wallet
+    cw = cargo_wallet(session, operator_id)
+    released, pending = released + cw["released"], pending + cw["held"]
     return {"available": money(released - out), "pending": money(pending), "total_earned": money(released),
             "total_paid_out": money(paid), "min_payout": get_float(session, "min_payout")}
 
