@@ -30,6 +30,16 @@ def effective_price(session: Session, p: ShopProduct) -> float:
     return min(prices) if prices else p.price
 
 
+def parse_colors(text: str) -> list[dict]:
+    out = []
+    for part in (text or "").split(","):
+        if ":" in part:
+            n, h = part.rsplit(":", 1)
+            if n.strip() and h.strip():
+                out.append({"name": n.strip(), "hex": h.strip().lower()})
+    return out
+
+
 def product_card(session: Session, p: ShopProduct, shop: Optional[Shop] = None, favs: Optional[set] = None,
                  cats: Optional[dict] = None) -> S.ProductCard:
     shop = shop or session.get(Shop, p.shop_id)
@@ -43,7 +53,7 @@ def product_card(session: Session, p: ShopProduct, shop: Optional[Shop] = None, 
         image=imgs[0] if imgs else None, shop=shop_mini(shop), category_id=p.category_id,
         category_name=cat.name_fr if cat else None, rating_avg=p.rating_avg, rating_count=p.rating_count,
         sold_count=p.sold_count, in_stock=available_stock(session, p) > 0, has_variants=bool(variants),
-        is_favorite=bool(favs and p.id in favs),
+        is_favorite=bool(favs and p.id in favs), colors=parse_colors(p.colors),
     )
 
 
@@ -84,7 +94,7 @@ def product_detail(session: Session, p: ShopProduct, user: Optional[User] = None
         variants=[S.VariantRead(id=v.id, label=v.label, sku=v.sku, price=v.price if v.price is not None else p.price,
                                 stock=v.stock, is_active=v.is_active) for v in variants],
         stock=available_stock(session, p), in_stock=available_stock(session, p) > 0, brand=p.brand, sku=p.sku,
-        weight_kg=p.weight_kg, attributes=parse_attributes(p.attributes),
+        weight_kg=p.weight_kg, attributes=parse_attributes(p.attributes), colors=parse_colors(p.colors),
         tags=[t.strip() for t in (p.tags or "").split(",") if t.strip()],
         category=category_read(session, cat) if cat else None, shop=shop_mini(shop),
         rating_avg=p.rating_avg, rating_count=p.rating_count, sold_count=p.sold_count,

@@ -49,6 +49,7 @@ class ProductCard(BaseModel):
     in_stock: bool = True
     has_variants: bool = False
     is_favorite: bool = False
+    colors: list[dict] = []
 
 
 class ProductPage(BaseModel):
@@ -94,6 +95,7 @@ class ProductDetail(BaseModel):
     weight_kg: float = 0
     attributes: list[dict] = []
     tags: list[str] = []
+    colors: list[dict] = []
     category: Optional[CategoryRead] = None
     shop: ShopMini
     rating_avg: float = 0
@@ -153,6 +155,7 @@ class HomeResponse(BaseModel):
 class CartItem(BaseModel):
     product_id: int
     variant_id: Optional[int] = None
+    color: Optional[str] = Field(default=None, max_length=30)
     quantity: int = Field(default=1, ge=1, le=99)
 
 
@@ -325,6 +328,11 @@ class ShopOwnerRead(ShopPublic):
     partner_application_id: Optional[int] = None
 
 
+class ColorWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=30)
+    hex: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+
+
 class VariantWrite(BaseModel):
     id: Optional[int] = None
     label: str = Field(min_length=1, max_length=80)
@@ -348,6 +356,7 @@ class ProductWrite(BaseModel):
     tags: str = Field(default="", max_length=300)
     status: str = "draft"
     images: list[str] = Field(default_factory=list, max_length=10)
+    colors: list[ColorWrite] = Field(default_factory=list, max_length=8)
     variants: list[VariantWrite] = Field(default_factory=list, max_length=60)
 
     @field_validator("status")

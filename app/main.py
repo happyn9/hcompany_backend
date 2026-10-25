@@ -2,7 +2,6 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 import sentry_sdk
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -118,6 +117,13 @@ def _ensure_default_playlist_course(session: Session) -> None:
 
 def seed_data() -> None:
     with Session(engine) as session:
+        if settings.auth_legacy_database_url:  # reprise unique des comptes de l'ancien service auth
+            try:
+                from app.auth_core.legacy_import import import_legacy_users
+                import_legacy_users(session, settings.auth_legacy_database_url)
+            except Exception:
+                logger.exception("Reprise des comptes de l'ancien service auth impossible — vérifiez AUTH_LEGACY_DATABASE_URL.")
+                session.rollback()
         if not session.exec(select(Course)).first():
             session.add_all([Course(sort_order=i, **c) for i, c in enumerate(SEED_COURSES)])
             session.flush()
@@ -134,24 +140,13 @@ def seed_data() -> None:
             admin_email = "admin@h-company.africa"
             admin_password = "changeme123"
 
-            # Le mot de passe vit désormais dans le service d'authentification
-            # commune — on l'y crée aussi, sans faire planter le démarrage si
-            # ce service n'est pas encore joignable (dev sans le lancer, ou
-            # ordre de démarrage Docker différent).
-            try:
-                with httpx.Client(timeout=3) as client:
-                    resp = client.post(
-                        f"{settings.auth_service_url}/api/v1/auth/register",
-                        json={"email": admin_email, "password": admin_password, "full_name": "Admin H-Company (dev)"},
-                    )
-                    if resp.status_code not in (201, 400):  # 400 = existe déjà, pas un problème
-                        logger.warning("Réponse inattendue du service auth au seed admin : %s", resp.status_code)
-            except httpx.RequestError:
-                logger.warning(
-                    "Service d'authentification injoignable au démarrage — le compte admin de dev "
-                    "devra être créé manuellement via %s/api/v1/auth/register.",
-                    settings.auth_service_url,
-                )
+            # Le mot de passe vit dans le compte central (tables authuser, intégrées à cette base).
+            from app.auth_core.models import AuthUser
+            from app.auth_core.service import hash_password
+            if not session.exec(select(AuthUser).where(AuthUser.email == admin_email)).first():
+                session.add(AuthUser(email=admin_email, hashed_password=hash_password(admin_password),
+                                     full_name="Admin H-Company (dev)", is_verified=True))
+                session.flush()
 
             if not session.exec(select(User).where(User.email == admin_email)).first():
                 session.add(

@@ -14,6 +14,7 @@ from app.lodging import models as lodging_models  # noqa: F401
 from app.transport import models as transport_models  # noqa: F401
 from app.transport import cargo as transport_cargo  # noqa: F401
 from app import agents as agents_models  # noqa: F401
+from app.auth_core import models as auth_core_models  # noqa: F401
 
 config = context.config
 

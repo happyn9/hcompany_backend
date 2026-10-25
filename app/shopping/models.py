@@ -107,6 +107,7 @@ class ShopProduct(SQLModel, table=True):
     weight_kg: float = 0
     attributes: str = ""  # « Clé: valeur » par ligne
     tags: str = ""  # séparés par des virgules
+    colors: str = ""  # « Nom:#rrggbb » séparés par des virgules (habillage de l'article)
     status: str = Field(default="draft", index=True)
     is_featured: bool = False
     sold_count: int = 0

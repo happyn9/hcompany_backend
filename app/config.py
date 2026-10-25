@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # les actions d'identification elles-mêmes (inscription, connexion,
     # OTP, rafraîchissement). Le reste du temps, les jetons sont vérifiés
     # localement avec secret_key, sans appel réseau.
+    # (OBSOLÈTE : l'authentification est maintenant intégrée à ce backend — voir app/auth_core.
+    # Ces deux réglages ne sont plus lus ; ils restent pour ne pas casser un .env existant.)
     auth_service_url: str = "http://localhost:8003"
     # Doit être IDENTIQUE à SERVICE_API_KEY dans auth/.env — utilisée pour
     # définir le mot de passe généré d'un partenaire à son approbation.
@@ -97,6 +99,19 @@ class Settings(BaseSettings):
     youtube_default_playlist_id: Optional[str] = None
     # Les cours liés à une playlist se rafraîchissent seuls après ce délai.
     youtube_refresh_hours: int = 6
+
+    # --- Authentification intégrée (ex-service auth/) ---
+    # URL de l'ANCIENNE base du service auth : si renseignée, ses comptes sont repris une seule fois
+    # au démarrage (identifiants conservés, personne n'est déconnecté). À retirer ensuite.
+    auth_legacy_database_url: Optional[str] = None
+    lockout_max_attempts: int = 5
+    lockout_window_minutes: int = 15
+    lockout_duration_minutes: int = 15
+    # Connexion Google : le callback est désormais CE backend (…/api/v1/auth/google/callback).
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
+    google_redirect_uri: str = "http://localhost:8000/api/v1/auth/google/callback"
+    frontend_success_redirect: str = "http://localhost:5173/oauth-callback"
 
     # --- Supervision des erreurs (Sentry) — vide = désactivé ---
     sentry_dsn: Optional[str] = None

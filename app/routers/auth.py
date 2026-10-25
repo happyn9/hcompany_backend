@@ -1,8 +1,9 @@
-import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app.auth_core import service as central_auth
 from app.config import settings
 from app.database import get_session
 from app.deps import _extract_token, get_current_user, oauth2_scheme
@@ -19,13 +20,13 @@ from app.schemas import (
     UserRegister,
 )
 from app.services.identity import resolve_local_user
+from app.services.notifications import send_email
 from app.services.rate_limit import limiter
 from app.services.shared_auth import decode_shared_token
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 REFRESH_COOKIE_NAME = "refresh_token"
-AUTH_SERVICE = settings.auth_service_url
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
@@ -47,41 +48,6 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         max_age=settings.refresh_token_expire_days * 24 * 3600,
         path="/api/v1/auth",
     )
-
-
-# Un client HTTP partagé (connexions réutilisées) : chaque appel n'a plus à
-# refaire la poignée de main TLS vers le service d'authentification, ce qui
-# fait gagner du temps sur chaque inscription, connexion et envoi de code.
-_http = httpx.Client(timeout=httpx.Timeout(45.0, connect=20.0), limits=httpx.Limits(max_keepalive_connections=10))
-
-
-def _call_auth_service(method: str, path: str, **kwargs) -> dict:
-    """Tous les appels vers le service central passent par ici — une seule
-    fonction pour traduire ses erreurs en HTTPException FastAPI, et gérer
-    le cas où le service est injoignable sans faire planter cette API."""
-    try:
-        # 45s plutôt que 10s : sur un hébergeur gratuit (Render, etc.), le
-        # service auth peut être en veille et mettre jusqu'à 30-60s à se
-        # réveiller au premier appel après une période d'inactivité — un
-        # délai de 10s abandonnait avant même que la requête n'arrive,
-        # renvoyant un 503 alors que le service était simplement en train
-        # de démarrer.
-        resp = _http.request(method, f"{AUTH_SERVICE}{path}", **kwargs)
-    except httpx.RequestError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Le service d'authentification est momentanément indisponible.",
-        )
-
-    if resp.status_code >= 400:
-        detail = "Une erreur est survenue."
-        try:
-            detail = resp.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise HTTPException(status_code=resp.status_code, detail=detail)
-
-    return resp.json()
 
 
 MOBILE_CLIENT_HEADER = "x-client-type"
@@ -119,25 +85,19 @@ def _issue_tokens_from_central(request: Request, response: Response, session: Se
     )
 
 
-# --- Inscription / connexion (relayées vers le service d'authentification commune) ---
+# --- Inscription / connexion (le compte central vit maintenant dans cette base : appels directs) ---
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 def register(request: Request, payload: UserRegister, session: Session = Depends(get_session)):
-    central_user = _call_auth_service(
-        "POST",
-        "/api/v1/auth/register",
-        json={"email": payload.email, "password": payload.password, "full_name": payload.full_name},
-    )
+    central_user = central_auth.register(session, payload.email, payload.password, payload.full_name)
     return resolve_local_user(session, uid=central_user["id"], email=central_user["email"])
 
 
 @router.post("/login", response_model=AccessTokenResponse)
 @limiter.limit("10/minute")
 def login(request: Request, response: Response, payload: UserLogin, session: Session = Depends(get_session)):
-    central = _call_auth_service(
-        "POST", "/api/v1/auth/login", json={"email": payload.email, "password": payload.password}
-    )
+    central = central_auth.login(session, payload.email, payload.password)
     local_user = resolve_local_user(session, uid=central["user"]["id"], email=central["user"]["email"])
     if not local_user.is_active:
         raise HTTPException(status_code=403, detail="Ce compte est désactivé.")
@@ -153,7 +113,7 @@ def refresh(request: Request, response: Response, payload: RefreshPayload = Refr
     if not token:
         raise HTTPException(status_code=401, detail="Session expirée, reconnectez-vous.")
 
-    central = _call_auth_service("POST", "/api/v1/auth/refresh", json={"refresh_token": token})
+    central = central_auth.refresh(session, token)
     return _issue_tokens_from_central(request, response, session, central)
 
 
@@ -168,35 +128,25 @@ def me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
-# --- OTP (relayé vers le service central — e-mail uniquement pour l'instant,
-# le service central ne gère pas encore le canal WhatsApp) ---
-
-def _ping_auth_service() -> None:
-    """Réveille le service d'authentification (hébergeur gratuit en veille).
-    Toute réponse, même une 404, prouve qu'il est debout : on ignore le résultat."""
-    try:
-        _http.get(f"{AUTH_SERVICE}/health", timeout=60)
-    except httpx.HTTPError:
-        pass
-
+# --- OTP (e-mail uniquement pour l'instant) ---
 
 @router.get("/warmup", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("12/minute")
-def warmup(request: Request, background: BackgroundTasks):
-    """Appelé par le site dès l'arrivée sur l'accueil, la connexion ou
-    l'inscription : répond tout de suite et réveille le service central en
-    tâche de fond, pour que le premier envoi de code ne subisse pas le
-    démarrage à froid."""
-    background.add_task(_ping_auth_service)
-    return {"status": "warming"}
+def warmup(request: Request):
+    """Conservé pour les anciens clients : plus rien à réveiller, l'authentification est dans cette API."""
+    return {"status": "ready"}
 
 
 @router.post("/otp/request", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("6/minute")
-def request_otp(request: Request, payload: OTPRequest, session: Session = Depends(get_session)):
-    _call_auth_service(
-        "POST", "/api/v1/auth/otp/request", json={"email": payload.identifier, "purpose": payload.purpose.value}
-    )
+def request_otp(request: Request, background: BackgroundTasks, payload: OTPRequest, session: Session = Depends(get_session)):
+    email = payload.identifier.strip()
+    code = central_auth.create_otp(session, email, payload.purpose.value) if "@" in email else None
+    if code:  # envoi en tâche de fond : la réponse part tout de suite, sans attendre le serveur SMTP
+        background.add_task(
+            send_email, email, "Votre code de vérification",
+            f"Votre code de vérification est : {code}. Il expire dans {settings.otp_expire_minutes} minutes.",
+        )
     return {"detail": "Si les informations sont valides, un code a été envoyé."}
 
 
@@ -208,35 +158,24 @@ def verify_otp_code(
     payload: OTPVerify,
     session: Session = Depends(get_session),
 ):
-    central = _call_auth_service(
-        "POST",
-        "/api/v1/auth/otp/verify",
-        json={"email": payload.identifier, "code": payload.code, "purpose": payload.purpose.value},
-    )
+    central = central_auth.verify_otp(session, payload.identifier.strip(), payload.purpose.value, payload.code)
     return _issue_tokens_from_central(request, response, session, central)
 
 
-# --- Réglages : changer le mot de passe (relayé vers le service central,
-# c'est lui qui possède le mot de passe désormais) ---
+# --- Réglages : mot de passe ---
 
 @router.post("/change-password")
 @limiter.limit("5/minute")
 def change_password(
     request: Request,
     payload: PasswordChange,
+    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
     header_token: str = Depends(oauth2_scheme),
 ):
     if not current_user.auth_uid:
         raise HTTPException(status_code=400, detail="Ce compte n'est pas encore relié au service d'authentification.")
-
-    token = _extract_token(request, header_token)
-    _call_auth_service(
-        "POST",
-        "/api/v1/auth/change-password",
-        json={"current_password": payload.current_password, "new_password": payload.new_password},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    central_auth.change_password(session, _extract_token(request, header_token), payload.current_password, payload.new_password)
     return {"detail": "Mot de passe mis à jour."}
 
 
@@ -245,31 +184,35 @@ def change_password(
 def reset_password(
     request: Request,
     payload: PasswordReset,
+    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
     header_token: str = Depends(oauth2_scheme),
 ):
     """À utiliser juste après une connexion par OTP avec purpose=reset_password
     (voir /otp/verify) — le jeton obtenu à cette étape suffit à prouver la
     possession du compte, pas besoin de redemander l'ancien mot de passe."""
-    token = _extract_token(request, header_token)
-    _call_auth_service(
-        "POST",
-        "/api/v1/auth/reset-password",
-        json={"new_password": payload.new_password},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    central_auth.reset_password(session, _extract_token(request, header_token), payload.new_password)
     return {"detail": "Mot de passe réinitialisé."}
 
 
-# --- Connexion avec Google (relayée) ---
+# --- Connexion avec Google ---
 
 @router.get("/google/login")
 @limiter.limit("10/minute")
 def google_login(request: Request):
-    """Renvoie l'URL Google vers laquelle le frontend doit rediriger
-    l'utilisateur — la redirection elle-même se fait côté client
-    (window.location = data.url)."""
-    return _call_auth_service("GET", "/api/v1/auth/google/login")
+    """Renvoie l'URL Google vers laquelle le frontend doit rediriger l'utilisateur (window.location = data.url)."""
+    return central_auth.google_login_url()
+
+
+@router.get("/google/callback")
+def google_callback(code: str, state: str, session: Session = Depends(get_session)):
+    """URI de redirection à déclarer dans la console Google : <API>/api/v1/auth/google/callback.
+    Redirige vers le site avec les jetons dans le fragment (#), jamais dans la requête."""
+    tokens, is_new = central_auth.google_callback(session, code, state)
+    return RedirectResponse(
+        f"{settings.frontend_success_redirect}#access_token={tokens['access_token']}"
+        f"&refresh_token={tokens['refresh_token']}&new_account={'1' if is_new else '0'}"
+    )
 
 
 class OAuthCompletePayload(BaseModel):
@@ -279,11 +222,8 @@ class OAuthCompletePayload(BaseModel):
 
 @router.post("/oauth/complete", response_model=AccessTokenResponse)
 def oauth_complete(response: Response, payload: OAuthCompletePayload, session: Session = Depends(get_session)):
-    """Appelé par la page /oauth-callback du site juste après le retour de
-    Google — les jetons ont déjà été émis par le service central (le
-    callback Google pointe directement dessus, pas sur ce backend). Ici,
-    on se contente de vérifier le jeton, poser le cookie de rafraîchissement
-    comme pour une connexion classique, et renvoyer le profil LOCAL enrichi."""
+    """Appelé par la page /oauth-callback du site juste après le retour de Google : vérifie le jeton,
+    pose le cookie de rafraîchissement et renvoie le profil LOCAL enrichi."""
     payload_data = decode_shared_token(payload.access_token)
     if not payload_data:
         raise HTTPException(status_code=401, detail="Jeton invalide.")
@@ -294,7 +234,7 @@ def oauth_complete(response: Response, payload: OAuthCompletePayload, session: S
 
     _set_refresh_cookie(response, payload.refresh_token)
     return AccessTokenResponse(
-      access_token=payload.access_token,
-      user=local_user,
-      refresh_token=payload.refresh_token,
+        access_token=payload.access_token,
+        user=local_user,
+        refresh_token=payload.refresh_token,
     )

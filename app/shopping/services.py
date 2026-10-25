@@ -218,7 +218,7 @@ def build_quote(
     grouped: dict[int, dict] = {}
     merged: dict[tuple, object] = {}
     for it in items:  # fusionne les doublons produit+variante
-        key = (it.product_id, it.variant_id)
+        key = (it.product_id, it.variant_id, (getattr(it, "color", None) or "").strip().lower())
         if key in merged:
             merged[key].quantity += it.quantity
         else:
@@ -228,9 +228,17 @@ def build_quote(
         shop = session.get(Shop, product.shop_id)
         g = grouped.setdefault(shop.id, {"shop": shop, "lines": [], "subtotal": 0.0})
         imgs = product_images(session, product.id)
+        label = variant.label if variant else ""
+        chosen = (getattr(it, "color", None) or "").strip()
+        if chosen:
+            from app.shopping.views import parse_colors
+            match = next((c for c in parse_colors(product.colors) if c["name"].lower() == chosen.lower()), None)
+            if not match:
+                raise HTTPException(status_code=422, detail=f"Couleur indisponible pour « {product.title} ».")
+            label = f"{label} · {match['name']}" if label else match["name"]
         g["lines"].append({
             "product_id": product.id, "variant_id": variant.id if variant else None,
-            "title": product.title, "variant_label": variant.label if variant else "",
+            "title": product.title, "variant_label": label,
             "image": imgs[0] if imgs else None, "unit_price": money(price), "quantity": qty,
             "line_total": money(price * qty), "category_id": product.category_id,
         })

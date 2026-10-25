@@ -17,6 +17,7 @@ from app.models import PartnerApplication, PartnerStatus, User, UserRole
 from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 from app.shopping import schemas as S
 from app.shopping import views
+from app.shopping.cutout import cutout_png
 from app.shopping.models import (
     Coupon, Shop, ShopAgency, ShopCategory, ShopOrder, ShopPayout, ShopProduct, ShopProductImage,
     ShopProductVariant, ShopReview, ShopOrderItem,
@@ -54,7 +55,7 @@ def _active_shop(session: Session, shop_id: int, user: User) -> Shop:
 # --- Images ----------------------------------------------------------------
 
 @router.post("/uploads")
-def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User = Depends(get_current_user)):
     """Téléverse une image (produit, logo, bannière) ; renvoie le chemin à
     enregistrer dans la boutique ou le produit."""
     ext = IMG_TYPES.get(file.content_type or "")
@@ -65,9 +66,16 @@ def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_
         raise HTTPException(status_code=400, detail="L'image ne doit pas dépasser 4 Mo.")
     if not data.startswith(MAGIC[ext]):
         raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
-    name = f"{user.id}-{uuid.uuid4().hex[:12]}{ext}"
+    cut = False
+    if cutout:  # suppression du fond uni → PNG transparent (nom « -cut »)
+        try:
+            data, cut = cutout_png(data)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Impossible de détourer cette image.")
+        ext = ".png"
+    name = f"{user.id}-{uuid.uuid4().hex[:12]}{'-cut' if cut else ''}{ext}"
     (SHOP_DIR / name).write_bytes(data)
-    return {"path": f"shopping/{name}"}
+    return {"path": f"shopping/{name}", "cutout": cut}
 
 
 def _check_image_path(path: str, user: User) -> str:
@@ -151,6 +159,7 @@ def _validate_product(session: Session, payload: S.ProductWrite, user: User) -> 
 def _apply_product(session: Session, product: ShopProduct, payload: S.ProductWrite) -> None:
     for f in ("title", "description", "category_id", "price", "compare_at_price", "stock", "sku", "brand", "weight_kg", "attributes", "tags", "status"):
         setattr(product, f, getattr(payload, f))
+    product.colors = ",".join(f"{c.name.strip().replace(',', ' ').replace(':', ' ')}:{c.hex.lower()}" for c in payload.colors)
     product.updated_at = datetime.utcnow()
     session.add(product)
     session.flush()
