@@ -80,7 +80,7 @@ def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User 
 
 def _check_image_path(path: str, user: User) -> str:
     """N'accepte que des fichiers téléversés par l'utilisateur dans /uploads/shopping."""
-    m = re.fullmatch(r"shopping/(\d+)-[0-9a-f]{12}\.(png|jpg|webp)", path or "")
+    m = re.fullmatch(r"shopping/(\d+)-[0-9a-f]{12}(?:-cut)?\.(png|jpg|webp)", path or "")
     if not m or int(m.group(1)) != user.id and user.role.value != "admin":
         raise HTTPException(status_code=422, detail="Image invalide : téléversez-la d'abord.")
     return path
