@@ -21,6 +21,8 @@ from app.schemas import (
 )
 from app.services.notifications import create_in_app_notification, send_email
 
+from app.upload_store import delete_upload, save_upload  # noqa: E402
+
 router = APIRouter(prefix="/api/v1/services", tags=["services"])
 
 # Catalogue des services H-Company proposés aux CLIENTS (H-Transport,
@@ -274,9 +276,7 @@ def admin_delete_catalog_item(
     if not item:
         raise HTTPException(status_code=404, detail="Service introuvable.")
     if item.logo_path:
-        logo_file = UPLOAD_ROOT / item.logo_path
-        if logo_file.exists():
-            logo_file.unlink()
+        delete_upload(UPLOAD_ROOT, item.logo_path)
     session.delete(item)
     session.commit()
     return None
@@ -307,14 +307,10 @@ def admin_upload_catalog_logo(
     # Ancien fichier supprimé s'il existe (évite d'accumuler des logos morts
     # à chaque remplacement, notamment si l'extension change).
     if item.logo_path:
-        old_file = UPLOAD_ROOT / item.logo_path
-        if old_file.exists():
-            old_file.unlink()
+        delete_upload(UPLOAD_ROOT, item.logo_path)
 
     filename = f"{item.key}-{uuid.uuid4().hex[:8]}{ext}"
-    dest = LOGO_DIR / filename
-    with open(dest, "wb") as f:
-        f.write(contents)
+    save_upload(UPLOAD_ROOT, f"service-logos/{filename}", contents)
 
     item.logo_path = f"service-logos/{filename}"
     item.updated_at = datetime.utcnow()

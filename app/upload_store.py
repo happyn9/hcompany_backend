@@ -13,7 +13,7 @@ from starlette.responses import Response
 
 from app.database import engine
 
-MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml"}
 
 
 class UploadBlob(SQLModel, table=True):
@@ -57,3 +57,14 @@ class DbFallbackStaticFiles(StaticFiles):
             except OSError:
                 pass
             return Response(blob.data, media_type=blob.content_type, headers={"Cache-Control": "public, max-age=86400"})
+
+
+def delete_upload(root: Path, rel_path: str) -> None:
+    f = root / rel_path
+    if f.exists():
+        f.unlink()
+    with Session(engine) as s:
+        b = s.get(UploadBlob, rel_path)
+        if b:
+            s.delete(b)
+            s.commit()
