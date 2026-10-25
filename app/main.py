@@ -210,7 +210,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # créé au chargement de app.routers.services s'il n'existe pas encore.
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+from app.upload_store import DbFallbackStaticFiles  # noqa: E402
+app.mount("/uploads", DbFallbackStaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(auth.router)
 app.include_router(partners.router)

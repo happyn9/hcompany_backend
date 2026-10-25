@@ -18,6 +18,7 @@ from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
 from app.shopping import schemas as S
 from app.shopping import views
 from app.shopping.cutout import cutout_png
+from app.upload_store import save_upload
 from app.shopping.models import (
     Coupon, Shop, ShopAgency, ShopCategory, ShopOrder, ShopPayout, ShopProduct, ShopProductImage,
     ShopProductVariant, ShopReview, ShopOrderItem,
@@ -74,7 +75,7 @@ def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User 
             raise HTTPException(status_code=400, detail="Impossible de détourer cette image.")
         ext = ".png"
     name = f"{user.id}-{uuid.uuid4().hex[:12]}{'-cut' if cut else ''}{ext}"
-    (SHOP_DIR / name).write_bytes(data)
+    save_upload(UPLOAD_ROOT, f"shopping/{name}", data)
     return {"path": f"shopping/{name}", "cutout": cut}
 
 

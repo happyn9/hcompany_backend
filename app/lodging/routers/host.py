@@ -25,6 +25,7 @@ from app.lodging.services import (
 from app.routers.partner_modules import require_module
 from app.models import PartnerApplication, PartnerStatus, User, UserRole
 from app.routers.learning_plans import OPERATOR_PREFIXES, normalize_zm_phone
+from app.upload_store import save_upload
 
 router = APIRouter(prefix="/api/v1/lodging/host", tags=["lodging-host"])
 
@@ -71,7 +72,7 @@ def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_
     if not data.startswith(MAGIC[ext]):
         raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
     name = f"{user.id}-{uuid.uuid4().hex[:12]}{ext}"
-    (LODGE_DIR / name).write_bytes(data)
+    save_upload(UPLOAD_ROOT, f"lodging/{name}", data)
     return {"path": f"lodging/{name}"}
 
 
