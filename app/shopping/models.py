@@ -92,6 +92,9 @@ class ShopAgency(SQLModel, table=True):
     is_active: bool = True
 
 
+MODEL3D_KINDS = ("sofa", "armchair", "chair", "table", "bed", "wardrobe", "shelf", "lamp", "tshirt", "hoodie", "dress", "trousers", "shoe", "bag")
+
+
 class ShopProduct(SQLModel, table=True):
     __tablename__ = "shopproduct"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -107,6 +110,7 @@ class ShopProduct(SQLModel, table=True):
     weight_kg: float = 0
     attributes: str = ""  # « Clé: valeur » par ligne
     tags: str = ""  # séparés par des virgules
+    model3d: str = ""  # forme 3D de l'article (voir MODEL3D_KINDS) ; vide = pas de vue 3D
     colors: str = ""  # « Nom:#rrggbb » séparés par des virgules (habillage de l'article)
     status: str = Field(default="draft", index=True)
     is_featured: bool = False

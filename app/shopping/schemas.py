@@ -50,6 +50,7 @@ class ProductCard(BaseModel):
     has_variants: bool = False
     is_favorite: bool = False
     colors: list[dict] = []
+    model3d: str = ""
 
 
 class ProductPage(BaseModel):
@@ -96,6 +97,7 @@ class ProductDetail(BaseModel):
     attributes: list[dict] = []
     tags: list[str] = []
     colors: list[dict] = []
+    model3d: str = ""
     category: Optional[CategoryRead] = None
     shop: ShopMini
     rating_avg: float = 0
@@ -357,7 +359,16 @@ class ProductWrite(BaseModel):
     status: str = "draft"
     images: list[str] = Field(default_factory=list, max_length=10)
     colors: list[ColorWrite] = Field(default_factory=list, max_length=8)
+    model3d: str = Field(default="", max_length=20)
     variants: list[VariantWrite] = Field(default_factory=list, max_length=60)
+
+    @field_validator("model3d")
+    @classmethod
+    def model3d_ok(cls, v: str) -> str:
+        from app.shopping.models import MODEL3D_KINDS
+        if v and v not in MODEL3D_KINDS:
+            raise ValueError("Forme 3D inconnue.")
+        return v
 
     @field_validator("status")
     @classmethod

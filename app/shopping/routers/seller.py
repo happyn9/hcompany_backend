@@ -157,7 +157,7 @@ def _validate_product(session: Session, payload: S.ProductWrite, user: User) -> 
 
 
 def _apply_product(session: Session, product: ShopProduct, payload: S.ProductWrite) -> None:
-    for f in ("title", "description", "category_id", "price", "compare_at_price", "stock", "sku", "brand", "weight_kg", "attributes", "tags", "status"):
+    for f in ("title", "description", "category_id", "price", "compare_at_price", "stock", "sku", "brand", "weight_kg", "attributes", "tags", "model3d", "status"):
         setattr(product, f, getattr(payload, f))
     product.colors = ",".join(f"{c.name.strip().replace(',', ' ').replace(':', ' ')}:{c.hex.lower()}" for c in payload.colors)
     product.updated_at = datetime.utcnow()
