@@ -11,7 +11,7 @@ from typing import Optional
 
 from sqlmodel import Field, SQLModel
 
-PROPERTY_TYPES = ("lodge", "hotel_room", "apartment", "house", "villa", "guesthouse", "studio")
+PROPERTY_TYPES = ("lodge", "hotel_room", "apartment", "house", "villa", "guesthouse", "studio", "room")
 PROPERTY_STATUSES = ("draft", "pending", "active", "paused", "rejected", "suspended")
 CANCELLATION_POLICIES = ("flexible", "moderate", "strict")
 # Cycle de vie d'une réservation :
