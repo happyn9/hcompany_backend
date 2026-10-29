@@ -56,7 +56,7 @@ def _active_shop(session: Session, shop_id: int, user: User) -> Shop:
 # --- Images ----------------------------------------------------------------
 
 @router.post("/uploads")
-def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User = Depends(get_current_user)):
+def upload_image(file: UploadFile = File(...), cutout: bool = False, precut: bool = False, user: User = Depends(get_current_user)):
     """Téléverse une image (produit, logo, bannière) ; renvoie le chemin à
     enregistrer dans la boutique ou le produit."""
     ext = IMG_TYPES.get(file.content_type or "")
@@ -68,6 +68,19 @@ def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User 
     if not data.startswith(MAGIC[ext]):
         raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
     cut = False
+    if precut and not cutout:
+        # Détourage fait dans le navigateur : on ne fait pas confiance au client,
+        # on vérifie que c'est bien un PNG avec une vraie part de transparence.
+        try:
+            import io
+            import numpy as np
+            from PIL import Image
+            im = Image.open(io.BytesIO(data))
+            im.load()
+            alpha = np.asarray(im.convert("RGBA"))[..., 3]
+            cut = ext == ".png" and bool((alpha < 20).mean() > 0.05)
+        except Exception:
+            cut = False
     if cutout:  # suppression du fond uni → PNG transparent (nom « -cut »)
         try:
             data, cut = cutout_png(data)
