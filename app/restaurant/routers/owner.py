@@ -99,8 +99,8 @@ class RestaurantIn(BaseModel):
     @field_validator("slot_minutes")
     @classmethod
     def _slot(cls, v: int) -> int:
-        if v not in (45, 60, 90, 120, 150, 180):
-            raise ValueError("Durée de table : 45, 60, 90, 120, 150 ou 180 minutes.")
+        if v < 30 or v > 240 or v % 15:
+            raise ValueError("Durée de table : entre 30 et 240 minutes, par pas de 15.")
         return v
 
     @field_validator("cuisines")
