@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 # Importe tous les modèles pour que leurs tables soient enregistrées dans
@@ -17,6 +17,7 @@ from app import agents as agents_models  # noqa: F401
 from app.auth_core import models as auth_core_models  # noqa: F401
 from app import upload_store  # noqa: F401
 from app.restaurant import models as restaurant_models  # noqa: F401
+from app.tourism import models as tourism_models  # noqa: F401
 
 config = context.config
 
@@ -53,9 +54,6 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
         with context.begin_transaction():
-            # Verrou : empêche deux instances de migrer en même temps (deploy Render qui se chevauche)
-            if connection.dialect.name == "postgresql":
-                connection.execute(text("SELECT pg_advisory_xact_lock(727274)"))
             context.run_migrations()
 
 

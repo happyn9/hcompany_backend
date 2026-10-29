@@ -12,12 +12,13 @@ from app.deps import get_current_user
 from app.lodging.models import LodgeHost
 from app.models import PartnerApplication, PartnerModule, PartnerStatus, User
 from app.restaurant.models import Restaurant
+from app.tourism.models import Tour
 from app.shopping.models import Shop
 from app.transport.models import TransportOperator
 
 router = APIRouter(prefix="/api/v1/partner/modules", tags=["partner-modules"])
 
-MODULES = ("lodging", "transport", "shopping", "learning", "restaurant")
+MODULES = ("lodging", "transport", "shopping", "learning", "restaurant", "tourism")
 
 
 def _application(session: Session, user: User) -> Optional[PartnerApplication]:
@@ -45,6 +46,8 @@ def _profile_exists(session: Session, user: User, module: str) -> bool:
         return session.exec(select(Shop).where(Shop.owner_id == user.id)).first() is not None
     if module == "restaurant":
         return session.exec(select(Restaurant).where(Restaurant.owner_id == user.id)).first() is not None
+    if module == "tourism":
+        return session.exec(select(Tour).where(Tour.owner_id == user.id)).first() is not None
     return False
 
 
