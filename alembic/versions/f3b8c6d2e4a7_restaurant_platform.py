@@ -15,8 +15,22 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _create_table(name, *cols, **kw):
+    """Idempotent : ignore si la table existe déjà (déploiement interrompu/concurrent)."""
+    if sa.inspect(op.get_bind()).has_table(name):
+        return
+    op.create_table(name, *cols, **kw)
+
+
+def _create_index(name, table, columns, **kw):
+    insp = sa.inspect(op.get_bind())
+    if any(i["name"] == name for i in insp.get_indexes(table)):
+        return
+    op.create_index(name, table, columns, **kw)
+
+
 def upgrade() -> None:
-    op.create_table('restaurant',
+    _create_table('restaurant',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('slug', sa.String(), nullable=False), sa.Column('owner_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False),
         sa.Column('partner_application_id', sa.Integer(), sa.ForeignKey('partnerapplication.id')),
@@ -37,34 +51,34 @@ def upgrade() -> None:
         sa.Column('is_featured', sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column('rating_avg', sa.Float(), nullable=False, server_default='0'), sa.Column('rating_count', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('created_at', sa.DateTime(), nullable=False), sa.Column('updated_at', sa.DateTime(), nullable=False), sa.Column('approved_at', sa.DateTime()))
-    op.create_index('ix_restaurant_slug', 'restaurant', ['slug'], unique=True)
-    op.create_index('ix_restaurant_owner_id', 'restaurant', ['owner_id'])
-    op.create_index('ix_restaurant_name', 'restaurant', ['name'])
-    op.create_index('ix_restaurant_city', 'restaurant', ['city'])
-    op.create_index('ix_restaurant_status', 'restaurant', ['status'])
-    op.create_table('restaurantimage',
+    _create_index('ix_restaurant_slug', 'restaurant', ['slug'], unique=True)
+    _create_index('ix_restaurant_owner_id', 'restaurant', ['owner_id'])
+    _create_index('ix_restaurant_name', 'restaurant', ['name'])
+    _create_index('ix_restaurant_city', 'restaurant', ['city'])
+    _create_index('ix_restaurant_status', 'restaurant', ['status'])
+    _create_table('restaurantimage',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False),
         sa.Column('path', sa.String(), nullable=False), sa.Column('sort_order', sa.Integer(), nullable=False, server_default='0'))
-    op.create_index('ix_restaurantimage_restaurant_id', 'restaurantimage', ['restaurant_id'])
-    op.create_table('menucategory',
+    _create_index('ix_restaurantimage_restaurant_id', 'restaurantimage', ['restaurant_id'])
+    _create_table('menucategory',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False),
         sa.Column('name', sa.String(), nullable=False), sa.Column('sort_order', sa.Integer(), nullable=False, server_default='0'))
-    op.create_index('ix_menucategory_restaurant_id', 'menucategory', ['restaurant_id'])
-    op.create_table('menuitem',
+    _create_index('ix_menucategory_restaurant_id', 'menucategory', ['restaurant_id'])
+    _create_table('menuitem',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False),
         sa.Column('category_id', sa.Integer(), sa.ForeignKey('menucategory.id')), sa.Column('name', sa.String(), nullable=False),
         sa.Column('description', sa.String(), nullable=False, server_default=''), sa.Column('price', sa.Float(), nullable=False),
         sa.Column('image_path', sa.String()), sa.Column('tags', sa.String(), nullable=False, server_default=''),
         sa.Column('is_available', sa.Boolean(), nullable=False, server_default=sa.true()), sa.Column('sort_order', sa.Integer(), nullable=False, server_default='0'))
-    op.create_index('ix_menuitem_restaurant_id', 'menuitem', ['restaurant_id'])
-    op.create_table('diningtable',
+    _create_index('ix_menuitem_restaurant_id', 'menuitem', ['restaurant_id'])
+    _create_table('diningtable',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False),
         sa.Column('label', sa.String(), nullable=False), sa.Column('seats', sa.Integer(), nullable=False, server_default='4'),
         sa.Column('shape', sa.String(), nullable=False, server_default='round'), sa.Column('zone', sa.String(), nullable=False, server_default='indoor'),
         sa.Column('x', sa.Float(), nullable=False, server_default='2'), sa.Column('z', sa.Float(), nullable=False, server_default='2'),
         sa.Column('rotation', sa.Float(), nullable=False, server_default='0'), sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.true()))
-    op.create_index('ix_diningtable_restaurant_id', 'diningtable', ['restaurant_id'])
-    op.create_table('reservation',
+    _create_index('ix_diningtable_restaurant_id', 'diningtable', ['restaurant_id'])
+    _create_table('reservation',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('code', sa.String(), nullable=False),
         sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False), sa.Column('table_id', sa.Integer(), sa.ForeignKey('diningtable.id')),
         sa.Column('user_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False), sa.Column('name', sa.String(), nullable=False),
@@ -75,19 +89,19 @@ def upgrade() -> None:
         sa.Column('preorder_total', sa.Float(), nullable=False, server_default='0'), sa.Column('restaurant_name', sa.String(), nullable=False, server_default=''),
         sa.Column('table_label', sa.String(), nullable=False, server_default=''), sa.Column('decline_reason', sa.String()),
         sa.Column('created_at', sa.DateTime(), nullable=False), sa.Column('updated_at', sa.DateTime(), nullable=False))
-    op.create_index('ix_reservation_code', 'reservation', ['code'], unique=True)
-    op.create_index('ix_reservation_restaurant_id', 'reservation', ['restaurant_id'])
-    op.create_index('ix_reservation_table_id', 'reservation', ['table_id'])
-    op.create_index('ix_reservation_user_id', 'reservation', ['user_id'])
-    op.create_index('ix_reservation_day', 'reservation', ['day'])
-    op.create_index('ix_reservation_status', 'reservation', ['status'])
-    op.create_table('restaurantreview',
+    _create_index('ix_reservation_code', 'reservation', ['code'], unique=True)
+    _create_index('ix_reservation_restaurant_id', 'reservation', ['restaurant_id'])
+    _create_index('ix_reservation_table_id', 'reservation', ['table_id'])
+    _create_index('ix_reservation_user_id', 'reservation', ['user_id'])
+    _create_index('ix_reservation_day', 'reservation', ['day'])
+    _create_index('ix_reservation_status', 'reservation', ['status'])
+    _create_table('restaurantreview',
         sa.Column('id', sa.Integer(), primary_key=True), sa.Column('restaurant_id', sa.Integer(), sa.ForeignKey('restaurant.id'), nullable=False),
         sa.Column('reservation_id', sa.Integer(), sa.ForeignKey('reservation.id'), nullable=False, unique=True), sa.Column('user_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False),
         sa.Column('rating', sa.Integer(), nullable=False), sa.Column('comment', sa.String(), nullable=False, server_default=''), sa.Column('created_at', sa.DateTime(), nullable=False))
-    op.create_index('ix_restaurantreview_restaurant_id', 'restaurantreview', ['restaurant_id'])
+    _create_index('ix_restaurantreview_restaurant_id', 'restaurantreview', ['restaurant_id'])
 
 
 def downgrade() -> None:
     for t in ('restaurantreview', 'reservation', 'diningtable', 'menuitem', 'menucategory', 'restaurantimage', 'restaurant'):
-        op.drop_table(t)
+        op.execute(f'DROP TABLE IF EXISTS "{t}" CASCADE')
