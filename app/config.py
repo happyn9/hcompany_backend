@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_from: str = "no-reply@h-company.africa"
+    # E-mail via API HTTPS (Resend) — à privilégier sur Render : les ports SMTP
+    # sortants (25/465/587) y sont bloqués sur les offres gratuites.
+    resend_api_key: Optional[str] = None
 
     # --- WhatsApp / SMS (Twilio) ---
     twilio_account_sid: Optional[str] = None
@@ -129,7 +132,7 @@ class Settings(BaseSettings):
 
     @property
     def notifications_configured(self) -> bool:
-        return bool(self.smtp_host or self.twilio_account_sid)
+        return bool(self.resend_api_key or self.smtp_host or self.twilio_account_sid)
 
 
 @lru_cache
