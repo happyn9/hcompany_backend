@@ -3,6 +3,7 @@
 Le disque des hébergeurs gratuits (Render…) est éphémère : à chaque redémarrage ou
 déploiement, `uploads/` est vidé. Chaque image est donc écrite sur disque (rapide)
 ET en base ; si le fichier a disparu, `DbFallbackStaticFiles` le recrée depuis la base."""
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,8 @@ class UploadBlob(SQLModel, table=True):
     path: str = Field(primary_key=True, max_length=200)
     content_type: str = "image/png"
     data: bytes = Field(sa_type=__import__("sqlalchemy").LargeBinary)
+    # Sert au délai de grâce du nettoyage des fichiers orphelins (voir shopping/cleanup.py).
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 def save_upload(root: Path, rel_path: str, data: bytes) -> None:

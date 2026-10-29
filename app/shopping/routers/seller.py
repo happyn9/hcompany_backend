@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlmodel import Session, func, select
 
 from app.database import get_session
@@ -19,6 +19,7 @@ from app.shopping import schemas as S
 from app.shopping import views
 from app.shopping.cutout import cutout_png
 from app.upload_store import save_upload
+from app.shopping.cleanup import release_if_unreferenced, sweep_in_background
 from app.shopping.models import (
     Coupon, Shop, ShopAgency, ShopCategory, ShopOrder, ShopPayout, ShopProduct, ShopProductImage,
     ShopProductVariant, ShopReview, ShopOrderItem,
@@ -56,7 +57,7 @@ def _active_shop(session: Session, shop_id: int, user: User) -> Shop:
 # --- Images ----------------------------------------------------------------
 
 @router.post("/uploads")
-def upload_image(file: UploadFile = File(...), cutout: bool = False, precut: bool = False, user: User = Depends(get_current_user)):
+def upload_image(background: BackgroundTasks, file: UploadFile = File(...), cutout: bool = False, precut: bool = False, user: User = Depends(get_current_user)):
     """Téléverse une image (produit, logo, bannière) ; renvoie le chemin à
     enregistrer dans la boutique ou le produit."""
     ext = IMG_TYPES.get(file.content_type or "")
@@ -89,6 +90,7 @@ def upload_image(file: UploadFile = File(...), cutout: bool = False, precut: boo
         ext = ".png"
     name = f"{user.id}-{uuid.uuid4().hex[:12]}{'-cut' if cut else ''}{ext}"
     save_upload(UPLOAD_ROOT, f"shopping/{name}", data)
+    background.add_task(sweep_in_background, UPLOAD_ROOT)  # ménage des orphelins, au plus toutes les 6 h
     return {"path": f"shopping/{name}", "cutout": cut}
 
 
@@ -146,11 +148,13 @@ def update_shop(shop_id: int, payload: S.ShopUpdate, session: Session = Depends(
         if not p:
             raise HTTPException(status_code=422, detail="Numéro mobile money invalide.")
         data["mobile_money_phone"] = p
+    old_media = [shop.logo_path, shop.banner_path]
     for k, v in data.items():
         setattr(shop, k, v.strip() if isinstance(v, str) else v)
     session.add(shop)
     session.commit()
     session.refresh(shop)
+    release_if_unreferenced(session, UPLOAD_ROOT, old_media)  # ancien logo / bannière remplacés
     return views.shop_owner_read(session, shop)
 
 
@@ -240,9 +244,11 @@ def update_product(product_id: int, payload: S.ProductWrite, session: Session = 
     if payload.status == "active":
         _active_shop(session, p.shop_id, user)
     _validate_product(session, payload, user)
+    before = session.exec(select(ShopProductImage.path).where(ShopProductImage.product_id == p.id)).all()
     _apply_product(session, p, payload)
     session.commit()
     session.refresh(p)
+    release_if_unreferenced(session, UPLOAD_ROOT, [x for x in before if x not in payload.images])  # photos retirées / remplacées
     return views.product_detail(session, p, user, owner=True)
 
 
@@ -270,16 +276,19 @@ def patch_product(product_id: int, payload: S.ProductStatusPatch, session: Sessi
 @router.delete("/products/{product_id}", status_code=204)
 def delete_product(product_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     p = _my_product(session, product_id, user)
+    freed_paths: list[str] = []
     if session.exec(select(ShopOrderItem).where(ShopOrderItem.product_id == p.id)).first():
         p.status = "archived"  # déjà commandé : on archive pour garder l'historique
         session.add(p)
     else:
         for row in session.exec(select(ShopProductImage).where(ShopProductImage.product_id == p.id)).all():
+            freed_paths.append(row.path)
             session.delete(row)
         for row in session.exec(select(ShopProductVariant).where(ShopProductVariant.product_id == p.id)).all():
             session.delete(row)
         session.delete(p)
     session.commit()
+    release_if_unreferenced(session, UPLOAD_ROOT, freed_paths)
 
 
 # --- Commandes ---------------------------------------------------------------

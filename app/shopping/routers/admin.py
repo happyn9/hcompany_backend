@@ -1,6 +1,7 @@
 """H-Shopping — administration : validation des boutiques, catégories,
 agences, commandes et litiges, retraits, réglages, vue d'ensemble."""
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,8 @@ from app.shopping.services import (
     refund_order, release_escrow, unique_slug, slugify, commission_rate_for,
 )
 from app.shopping.routers.seller import _payout_read
+from app.shopping.cleanup import sweep_orphans
+from app.shopping.routers.seller import UPLOAD_ROOT
 
 router = APIRouter(prefix="/api/v1/shopping/admin", tags=["shopping-admin"])
 
@@ -333,3 +336,12 @@ def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_sessio
         session.add(row)
     session.commit()
     return all_settings(session)
+
+
+# --- Maintenance : images orphelines ----------------------------------------
+
+@router.post("/uploads/cleanup")
+def cleanup_uploads(dry_run: bool = True, min_age_hours: int = 48, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+    """Supprime les images H-Shopping rattachées à rien (ni article, ni boutique, ni commande).
+    Par défaut en simulation (dry_run=true) : renvoie ce qui serait supprimé, sans rien effacer."""
+    return sweep_orphans(session, UPLOAD_ROOT, timedelta(hours=max(1, min_age_hours)), dry_run=dry_run)
