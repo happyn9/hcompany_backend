@@ -16,6 +16,7 @@ from app.transport import cargo as transport_cargo  # noqa: F401
 from app import agents as agents_models  # noqa: F401
 from app.auth_core import models as auth_core_models  # noqa: F401
 from app import upload_store  # noqa: F401
+from app.restaurant import models as restaurant_models  # noqa: F401
 
 config = context.config
 

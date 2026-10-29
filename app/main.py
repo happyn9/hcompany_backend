@@ -28,6 +28,7 @@ from app.shopping.services import seed_shopping
 from app.transport.routers import admin as transport_admin, operator as transport_operator, public as transport_public
 from app.transport import cargo as transport_cargo
 from app import agents as agents_module
+from app.restaurant.routers import admin as restaurant_admin, owner as restaurant_owner, public as restaurant_public
 from app.lodging.routers import admin as lodging_admin, catalog as lodging_catalog, guest as lodging_guest, host as lodging_host
 from app.services.rate_limit import limiter
 
@@ -236,6 +237,9 @@ app.include_router(lodging_catalog.router)
 app.include_router(lodging_guest.router)
 app.include_router(lodging_host.router)
 app.include_router(lodging_admin.router)
+app.include_router(restaurant_public.router)
+app.include_router(restaurant_owner.router)
+app.include_router(restaurant_admin.router)
 app.include_router(transport_public.router)
 app.include_router(transport_operator.router)
 app.include_router(transport_admin.router)
