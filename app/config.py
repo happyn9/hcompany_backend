@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # True obligatoire en production (HTTPS)
 
     # --- CORS ---
-    frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
+    frontend_url: str = "https://hcompany-global.vercel.app"  # base des liens envoyés par e-mail (invitation partenaire)
     partner_invite_required: bool = True  # la candidature partenaire passe par un lien envoyé par H-Company
-    allowed_origins: str = "http://localhost:5173,http://localhost:4173"
+    allowed_origins: str = "https://hcompany-global.vercel.app"
 
     # --- OTP ---
     otp_length: int = 6
