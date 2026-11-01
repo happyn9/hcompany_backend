@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     otp_expire_minutes: int = 10
     otp_max_attempts: int = 5
 
-    # --- Email (SMTP) ---
+    # --- Email ---
+    # Resend (API HTTPS) : prioritaire sur SMTP si renseigné.
+    resend_api_key: Optional[str] = None
+    # SMTP (repli)
     smtp_host: Optional[str] = None
     smtp_port: int = 587
     smtp_user: Optional[str] = None
@@ -131,7 +134,7 @@ class Settings(BaseSettings):
 
     @property
     def notifications_configured(self) -> bool:
-        return bool(self.smtp_host or self.twilio_account_sid)
+        return bool(self.resend_api_key or self.smtp_host or self.twilio_account_sid)
 
 
 @lru_cache
