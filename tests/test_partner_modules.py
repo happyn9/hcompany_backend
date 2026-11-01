@@ -81,6 +81,16 @@ def test_activation_bootstraps_profiles(c):
     op = c.get("/api/v1/transport/operator/me").json()
     assert op["status"] == "approved"
 
+    # Plan Standard : 2 apps maximum — la 3e demande le plan Pro
+    assert c.post(f"{M}/learning/activate").status_code == 402
+    from app.partnerhub.models import PartnerPlan
+    with Session(engine) as s:
+        from sqlmodel import select as _sel
+        uid = s.exec(_sel(User).where(User.email == "partner@mod.test")).one().id
+        row = s.get(PartnerPlan, uid) or PartnerPlan(user_id=uid)
+        row.plan = "pro"
+        s.add(row)
+        s.commit()
     r = c.post(f"{M}/learning/activate").json()
     learning = next(m for m in r["modules"] if m["key"] == "learning")
     assert learning["active"] and not learning["has_profile"]

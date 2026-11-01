@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # True obligatoire en production (HTTPS)
 
     # --- CORS ---
+    frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
+    partner_invite_required: bool = True  # la candidature partenaire passe par un lien envoyé par H-Company
     allowed_origins: str = "http://localhost:5173,http://localhost:4173"
 
     # --- OTP ---
@@ -56,9 +58,6 @@ class Settings(BaseSettings):
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_from: str = "no-reply@h-company.africa"
-    # E-mail via API HTTPS (Resend) — à privilégier sur Render : les ports SMTP
-    # sortants (25/465/587) y sont bloqués sur les offres gratuites.
-    resend_api_key: Optional[str] = None
 
     # --- WhatsApp / SMS (Twilio) ---
     twilio_account_sid: Optional[str] = None
@@ -132,7 +131,7 @@ class Settings(BaseSettings):
 
     @property
     def notifications_configured(self) -> bool:
-        return bool(self.resend_api_key or self.smtp_host or self.twilio_account_sid)
+        return bool(self.smtp_host or self.twilio_account_sid)
 
 
 @lru_cache

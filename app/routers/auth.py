@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
-from sqlmodel import Session
+from pydantic import BaseModel, Field
+from sqlmodel import Session, select
 
 from app.auth_core import service as central_auth
 from app.config import settings
@@ -98,6 +98,31 @@ def register(request: Request, payload: UserRegister, session: Session = Depends
 @limiter.limit("10/minute")
 def login(request: Request, response: Response, payload: UserLogin, session: Session = Depends(get_session)):
     central = central_auth.login(session, payload.email, payload.password)
+    local_user = resolve_local_user(session, uid=central["user"]["id"], email=central["user"]["email"])
+    if not local_user.is_active:
+        raise HTTPException(status_code=403, detail="Ce compte est désactivé.")
+    return _issue_tokens_from_central(request, response, session, central)
+
+
+class PartnerLogin(BaseModel):
+    code: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/login-partner", response_model=AccessTokenResponse)
+@limiter.limit("10/minute")
+def login_partner(request: Request, response: Response, payload: PartnerLogin, session: Session = Depends(get_session)):
+    """Connexion partenaire : code partenaire + mot de passe. Même réponse d'erreur
+    que la connexion e-mail, qu'un code existe ou non."""
+    user = session.exec(select(User).where(User.partner_code == payload.code.strip().upper())).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Code partenaire ou mot de passe incorrect.")
+    try:
+        central = central_auth.login(session, user.email, payload.password)
+    except HTTPException as exc:
+        if exc.status_code in (400, 401, 404):
+            raise HTTPException(status_code=401, detail="Code partenaire ou mot de passe incorrect.")
+        raise
     local_user = resolve_local_user(session, uid=central["user"]["id"], email=central["user"]["email"])
     if not local_user.is_active:
         raise HTTPException(status_code=403, detail="Ce compte est désactivé.")

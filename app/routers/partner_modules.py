@@ -78,6 +78,14 @@ def _bootstrap(session: Session, user: User, app: PartnerApplication, module: st
             user_id=user.id, name=app.company[:120], phone=app.phone or "", whatsapp=app.phone or "", city="",
             partner_application_id=app.id, status="approved", is_verified=True, approved_at=datetime.utcnow(),
         ))
+    elif module == "shopping" and not _profile_exists(session, user, module):
+        from app.shopping.services import unique_slug as shop_slug
+        session.add(Shop(slug=shop_slug(session, Shop, app.company), owner_id=user.id, name=app.company[:120], phone=app.phone or "", whatsapp=app.phone or "",
+                         email=app.email, address=app.address or "", partner_application_id=app.id, status="approved", approved_at=datetime.utcnow()))
+    elif module == "restaurant" and not _profile_exists(session, user, module):
+        from app.shopping.services import unique_slug as rest_slug
+        session.add(Restaurant(slug=rest_slug(session, Restaurant, app.company), owner_id=user.id, partner_application_id=app.id, name=app.company[:120],
+                               phone=app.phone or "", whatsapp=app.phone or "", address=app.address or ""))
 
 
 @router.get("")
@@ -92,6 +100,8 @@ def activate(module: str, session: Session = Depends(get_session), user: User = 
     app = _application(session, user)
     if not app or app.status != PartnerStatus.approved:
         raise HTTPException(status_code=403, detail="Votre partenariat doit d'abord être accepté par H-Company.")
+    from app.partnerhub.services import check_can_activate
+    check_can_activate(session, user, module)  # plan Standard : 2 apps maximum
     row = session.exec(select(PartnerModule).where(PartnerModule.user_id == user.id, PartnerModule.module == module)).first()
     if row:
         row.active, row.deactivated_at = True, None

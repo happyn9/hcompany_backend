@@ -119,6 +119,7 @@ def apply(
     id_document_type: str = Form(...),
     id_document_number: str = Form(...),
     id_document: UploadFile = File(...),
+    invite: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
@@ -130,6 +131,13 @@ def apply(
     un admin, via un endpoint authentifié dédié, avant toute confirmation."""
     if id_document_type not in VALID_ID_DOCUMENT_TYPES:
         raise HTTPException(status_code=422, detail="Type de pièce d'identité invalide.")
+
+    from app.partnerhub.routers import find_valid_invite
+    invite_row = None
+    if settings.partner_invite_required or invite:
+        invite_row = find_valid_invite(session, invite or "")
+        if invite_row.email.lower() != current_user.email.lower():
+            raise HTTPException(status_code=403, detail=f"Ce lien est réservé à {invite_row.email} : connectez-vous avec cette adresse.")
 
     ext = ALLOWED_ID_DOCUMENT_TYPES.get(id_document.content_type)
     if not ext:
@@ -158,6 +166,9 @@ def apply(
         id_document_path=f"kyc/{filename}",
     )
     session.add(application)
+    if invite_row:
+        invite_row.used_at = datetime.utcnow()
+        session.add(invite_row)
     session.commit()
     session.refresh(application)
 
