@@ -60,3 +60,14 @@ class MoneyAudit(SQLModel, table=True):
     target: str = ""
     detail: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MoneyRate(SQLModel, table=True):
+    """Taux par sens (ZM→CD, CD→ZM) : « envoi » (opération Envoyer) et « retrait » (opération Demander : le bénéficiaire retire).
+    Exprimés en unités de devise reçue pour 1 unité de devise payée. Vide = taux du marché (taux de change − marge)."""
+    from_country: str = Field(primary_key=True, max_length=2)
+    to_country: str = Field(primary_key=True, max_length=2)
+    send_rate: Optional[float] = None
+    withdraw_rate: Optional[float] = None
+    updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

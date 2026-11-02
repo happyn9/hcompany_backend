@@ -21,14 +21,14 @@ def favorite_ids(session: Session, user: Optional[User]) -> set:
 
 
 def card(session: Session, p: Property, host: Optional[LodgeHost] = None, favs: Optional[set] = None,
-         *, total: Optional[float] = None, nights: Optional[int] = None) -> S.PropertyCard:
+         *, boosted: Optional[set] = None, total: Optional[float] = None, nights: Optional[int] = None) -> S.PropertyCard:
     host = host or session.get(LodgeHost, p.host_id)
     imgs = [i.path for i in property_images(session, p.id)]
     return S.PropertyCard(
         id=p.id, slug=p.slug, title=p.title, type=p.type, city=p.city, area=p.area, price_per_night=p.price_per_night,
         image=imgs[0] if imgs else None, images=imgs[:5], max_guests=p.max_guests, bedrooms=p.bedrooms, beds=p.beds,
         bathrooms=p.bathrooms, rating_avg=p.rating_avg, rating_count=p.rating_count, instant_book=p.instant_book,
-        is_featured=p.is_featured, is_favorite=bool(favs and p.id in favs), host_name=host.display_name if host else "",
+        is_featured=p.is_featured or bool(boosted and host and host.user_id in boosted), is_favorite=bool(favs and p.id in favs), host_name=host.display_name if host else "",
         host_verified=bool(host and host.is_verified), amenities=[a for a in p.amenities.split(",") if a],
         latitude=round(p.latitude, 2) if p.latitude is not None else None,
         longitude=round(p.longitude, 2) if p.longitude is not None else None, total=total, nights=nights,

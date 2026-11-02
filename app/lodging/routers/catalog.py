@@ -16,6 +16,7 @@ from app.lodging.services import (
     AMENITIES, availability_conflict, calendar_days, property_images, quote_stay, _rules, night_price, daterange,
 )
 from app.models import User
+from app.partnerhub.services import boosted_users
 
 router = APIRouter(prefix="/api/v1/lodging", tags=["lodging"])
 
@@ -34,12 +35,13 @@ def _visible():
 
 def _cards(session: Session, rows, user: Optional[User]):
     favs = views.favorite_ids(session, user)
+    boosted = boosted_users(session, "lodge_boost")
     hosts: dict = {}
     out = []
     for p in rows:
         if p.host_id not in hosts:
             hosts[p.host_id] = session.get(LodgeHost, p.host_id)
-        out.append(views.card(session, p, hosts[p.host_id], favs))
+        out.append(views.card(session, p, hosts[p.host_id], favs, boosted=boosted))
     return out
 
 
@@ -112,7 +114,11 @@ def search(
         stmt = stmt.where(Property.rating_avg >= min_rating)
     for key in [a for a in (amenities or "").split(",") if a in AMENITIES]:
         stmt = stmt.where(Property.amenities.like(f"%{key}%"))
-    stmt = stmt.order_by(*SORTS.get(sort, SORTS["recommended"]), Property.id.desc())
+    order = SORTS.get(sort, SORTS["recommended"])
+    if order is SORTS["recommended"]:  # les hôtes Premium passent devant, puis le tri habituel
+        boosted_hosts = select(LodgeHost.id).where(LodgeHost.user_id.in_(boosted_users(session, "lodge_boost") or {-1}))
+        order = (Property.host_id.in_(boosted_hosts).desc(),) + order
+    stmt = stmt.order_by(*order, Property.id.desc())
 
     dated = bool(check_in and check_out)
     if dated and (check_out <= check_in or check_in < date.today()):
@@ -134,7 +140,8 @@ def search(
         total = len(kept)
         rows = kept[(page - 1) * per_page: page * per_page]
         favs = views.favorite_ids(session, user)
-        items = [views.card(session, p, None, favs, total=totals[p.id], nights=nights) for p in rows]
+        boosted = boosted_users(session, "lodge_boost")
+        items = [views.card(session, p, None, favs, boosted=boosted, total=totals[p.id], nights=nights) for p in rows]
     else:
         count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
         total = session.exec(count_stmt).one()

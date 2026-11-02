@@ -130,3 +130,15 @@ def test_login_with_partner_code(c):
     bad = c.post("/api/v1/auth/login-partner", json={"code": "HC-111222", "password": "faux"})
     unknown = c.post("/api/v1/auth/login-partner", json={"code": "HC-000000", "password": "faux"})
     assert bad.status_code == unknown.status_code == 401 and bad.json()["detail"] == unknown.json()["detail"]
+
+
+def test_premium_boost_features_exist_and_boosted_users():
+    from app.partnerhub import services as ph
+    from app.partnerhub.models import PartnerFeature
+    assert "lodge_boost" in ph.PAID_FEATURES and "transport_boost" in ph.PAID_FEATURES
+    from sqlmodel import Session
+    from app.database import engine
+    with Session(engine) as s:
+        s.add(PartnerFeature(user_id=987654, key="lodge_boost", status="active")); s.commit()
+        assert 987654 in ph.boosted_users(s, "lodge_boost")
+        assert 987654 not in ph.boosted_users(s, "transport_boost")

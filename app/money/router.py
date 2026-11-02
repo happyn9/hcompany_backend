@@ -35,7 +35,7 @@ def corridors(session: Session = Depends(get_session)):
     geo.ensure_seed(session)
     return {"countries": ["ZM", "CD"], "operators": {k: [{"key": a, "label": b} for a, b in v.items()] for k, v in svc.OPERATORS.items()},
             "limits_usd": {"min": svc.MIN_USD, "max": svc.MAX_USD, "daily": svc.DAILY_MAX_USD}, "fee_pct": svc.FEE_PCT,
-            "currencies": {c: svc._currency(session, c) for c in ("ZM", "CD")}, "simulated": get_provider().simulated}
+            "currencies": {c: svc._currency(session, c) for c in ("ZM", "CD")}, "rates": svc.corridor_rates(session), "simulated": get_provider().simulated}
 
 
 @router.get("/quote")

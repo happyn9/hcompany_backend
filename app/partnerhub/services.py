@@ -17,6 +17,8 @@ FREE_FEATURES = ["publish", "inventory", "orders", "revenue"]
 PAID_FEATURES = {
     "promotion": {"label": "Promotions & mise en avant", "price_usd": 15, "per": "mois"},
     "branding": {"label": "Dashboard à votre nom (splash, logo, couleur)", "price_usd": 10, "per": "mois"},
+    "lodge_boost": {"label": "H-Logement Premium : vos annonces en tête et badge « Recommandé »", "price_usd": 12, "per": "mois"},
+    "transport_boost": {"label": "H-Transport Premium : vos départs en tête et badge « Recommandé »", "price_usd": 12, "per": "mois"},
 }
 PLAN_PRO_PRICE_USD = 29  # par mois — à valider
 
@@ -77,3 +79,12 @@ HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 def branding_of(session: Session, user_id: int) -> Optional[PartnerBranding]:
     return session.get(PartnerBranding, user_id)
+
+
+def boosted_users(session: Session, key: str) -> set:
+    """Utilisateurs dont la fonction premium `key` est active (ou qui sont en plan Pro, qui inclut tout)."""
+    ids = {r.user_id for r in session.exec(select(PartnerFeature).where(PartnerFeature.key == key, PartnerFeature.status == "active")).all()}
+    for plan in session.exec(select(PartnerPlan).where(PartnerPlan.plan == "pro")).all():
+        if is_pro(plan):
+            ids.add(plan.user_id)
+    return ids

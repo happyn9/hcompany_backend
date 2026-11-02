@@ -67,6 +67,7 @@ class OperatorPublic(BaseModel):
     rating_avg: float = 0
     rating_count: int = 0
     trips_count: int = 0
+    promoted: bool = False  # option H-Transport Premium : badge « Recommandé »
 
 
 class TripCard(BaseModel):

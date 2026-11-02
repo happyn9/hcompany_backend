@@ -13,7 +13,7 @@ from app.database import get_session
 from app.deps import get_current_user
 from app.models import User
 from app.money import services as svc
-from app.money.models import MoneyAgent, MoneyAudit, MoneyTransfer
+from app.money.models import MoneyAgent, MoneyAudit, MoneyRate, MoneyTransfer
 from app.money.router import _read
 
 admin_router = APIRouter(prefix="/api/v1/money/admin", tags=["money-admin"])
@@ -198,3 +198,65 @@ def agent_rate(payload: RateIn, session: Session = Depends(get_session), user: U
     audit(session, user, "rate_set", cur, f"{old[0]}/{old[1]}% → {payload.per_usd}/{payload.margin_pct}%")
     session.commit()
     return {"currency": cur, "per_usd": row.per_usd, "margin_pct": row.margin_pct}
+
+
+# --- Taux d'envoi et de retrait, dans les deux sens -----------------------------
+
+class CorridorRateIn(BaseModel):
+    from_country: str = Field(min_length=2, max_length=2)
+    to_country: str = Field(min_length=2, max_length=2)
+    send_rate: Optional[float] = Field(default=None, gt=0, le=10_000_000)
+    withdraw_rate: Optional[float] = Field(default=None, gt=0, le=10_000_000)
+    reset: bool = False  # revenir au taux du marché
+
+
+def _apply_corridor_rate(session: Session, actor: User, p: CorridorRateIn, max_dev: float) -> dict:
+    frm, to = p.from_country.upper(), p.to_country.upper()
+    svc.check_corridor(frm, to)
+    market = svc.market_rate(session, frm, to)
+    row = session.get(MoneyRate, (frm, to)) or MoneyRate(from_country=frm, to_country=to)
+    old = (row.send_rate, row.withdraw_rate)
+    if p.reset:
+        row.send_rate = row.withdraw_rate = None
+    else:
+        for name in ("send_rate", "withdraw_rate"):
+            v = getattr(p, name)
+            if v is None:
+                continue
+            if abs(v - market) / market > max_dev:
+                raise HTTPException(status_code=422, detail=f"Écart trop grand ({int(max_dev * 100)} % max par rapport au taux du marché : {market:g}).")
+            setattr(row, name, v)
+    row.updated_by, row.updated_at = actor.id, datetime.utcnow()
+    session.add(row)
+    audit(session, actor, "corridor_rate", f"{frm}>{to}", f"envoi/retrait {old} → {(row.send_rate, row.withdraw_rate)} (marché {market:g})")
+    session.commit()
+    return svc.corridor_rates(session)[f"{frm}>{to}"]
+
+
+@admin_router.get("/corridor-rates")
+def admin_corridor_rates(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    geo.ensure_seed(session)
+    return svc.corridor_rates(session)
+
+
+@admin_router.put("/corridor-rates")
+def admin_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    return _apply_corridor_rate(session, admin, payload, max_dev=0.5)
+
+
+@agent_router.get("/corridor-rates")
+def agent_corridor_rates(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    rows = [a for a in _agent_rows(session, user) if a.can_set_rates]
+    if not rows:
+        raise HTTPException(status_code=403, detail="Vous ne pouvez pas fixer de taux.")
+    mine = {a.country for a in rows}
+    return {k: v for k, v in svc.corridor_rates(session).items() if set(k.split(">")) & mine}
+
+
+@agent_router.put("/corridor-rates")
+def agent_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Un agent règle les taux des sens qui touchent son pays, à ±25 % du taux du marché."""
+    mine = {a.country for a in _agent_rows(session, user) if a.can_set_rates}
+    if not ({payload.from_country.upper(), payload.to_country.upper()} & mine):
+        raise HTTPException(status_code=403, detail="Ce sens ne touche pas votre pays.")
+    return _apply_corridor_rate(session, user, payload, max_dev=0.25)

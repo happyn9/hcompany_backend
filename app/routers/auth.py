@@ -21,6 +21,7 @@ from app.schemas import (
 )
 from app.services.identity import resolve_local_user
 from app.services.notifications import send_email
+from app.services.notifications.email_channel import otp_body
 from app.services.rate_limit import limiter
 from app.services.shared_auth import decode_shared_token
 
@@ -169,8 +170,8 @@ def request_otp(request: Request, background: BackgroundTasks, payload: OTPReque
     code = central_auth.create_otp(session, email, payload.purpose.value) if "@" in email else None
     if code:  # envoi en tâche de fond : la réponse part tout de suite, sans attendre le serveur SMTP
         background.add_task(
-            send_email, email, "Votre code de vérification",
-            f"Votre code de vérification est : {code}. Il expire dans {settings.otp_expire_minutes} minutes.",
+            send_email, email, "Votre code de vérification / Your verification code",
+            otp_body(code, "Votre code de vérification", "Your verification code"),
         )
     return {"detail": "Si les informations sont valides, un code a été envoyé."}
 

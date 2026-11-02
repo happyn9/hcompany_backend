@@ -8,7 +8,7 @@ os.environ.setdefault("ENVIRONMENT", "development")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlmodel import SQLModel, Session  # noqa: E402
+from sqlmodel import SQLModel, Session, select  # noqa: E402
 
 from app.database import engine  # noqa: E402
 from app.deps import get_current_user  # noqa: E402
@@ -116,3 +116,25 @@ def test_request_decline_and_self_pay(c):
     assert c.post(f"{M}/requests/{code}/decline").json()["status"] == "declined"
     assert c.post(f"{M}/requests/{code}/decline").status_code == 409
     assert c.get(f"{M}/requests/HM-INCONNU").status_code == 404
+
+
+def test_send_and_withdraw_rates_per_direction(c):
+    """Taux d'envoi (Envoyer) et de retrait (Demander) distincts, dans les deux sens ; revient au marché avec reset."""
+    from app.money import services as svc
+    from app.money.admin import CorridorRateIn, _apply_corridor_rate
+    from app.models import User
+    with Session(engine) as s:
+        admin = s.exec(select(User)).first()
+        base = svc.quote_send(s, "ZM", "CD", 100)
+        m = svc.market_rate(s, "ZM", "CD")
+        _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", send_rate=m * 0.9, withdraw_rate=m * 1.1), 0.5)
+        q = svc.quote_send(s, "ZM", "CD", 100)
+        assert q["receive_amount"] < base["receive_amount"]  # taux d'envoi plus bas : le bénéficiaire reçoit moins
+        r = svc.quote_receive(s, "ZM", "CD", 10)
+        assert r["receive_amount"] == 10 and r["send_amount"] > 0
+        # le sens inverse n'est pas touché
+        assert svc.override_rate(s, "CD", "ZM", "send") is None
+        with pytest.raises(Exception):
+            _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", send_rate=m * 3), 0.5)
+        _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", reset=True), 0.5)
+        assert svc.quote_send(s, "ZM", "CD", 100) == base

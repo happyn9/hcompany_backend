@@ -3,6 +3,7 @@ paiement (séquestre), mes billets, annulation, litige, avis."""
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from app.partnerhub.services import boosted_users
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, func, select
 
@@ -67,7 +68,14 @@ def search(
         stmt = stmt.where(TransportTrip.border_crossing == border)
     cards = [views.trip_card(session, t) for t in session.exec(stmt.order_by(TransportTrip.departure_at).limit(200)).all()]
     cards = [c for c in cards if c.seats_left >= seats or not c.bookable]
-    if sort == "price":
+    boosted = boosted_users(session, "transport_boost")
+    if boosted:
+        promo_ops = {o.id for o in session.exec(select(TransportOperator).where(TransportOperator.user_id.in_(boosted))).all()}
+        for c in cards:
+            c.operator.promoted = c.operator.id in promo_ops
+    if sort == "recommended":
+        cards.sort(key=lambda c: (not c.operator.promoted, c.departure_at))
+    elif sort == "price":
         cards.sort(key=lambda c: (c.price, c.departure_at))
     elif sort == "rating":
         cards.sort(key=lambda c: (-c.operator.rating_avg, c.departure_at))

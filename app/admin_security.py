@@ -14,6 +14,7 @@ from app.database import get_session
 from app.deps import get_current_admin
 from app.models import User
 from app.services.notifications import send_email
+from app.services.notifications.email_channel import otp_body
 from app.services.rate_limit import limiter
 
 TTL = timedelta(minutes=10)
@@ -52,8 +53,8 @@ def send_code(request: Request, background: BackgroundTasks, session: Session = 
     """Alternative au mot de passe (compte sans mot de passe, ou oublié) : code à usage unique envoyé à l'e-mail de l'admin connecté."""
     code = central_auth.create_otp(session, admin.email, "admin_confirm")
     if code:
-        background.add_task(send_email, admin.email, "Code d'accès à l'espace admin H-Company",
-                            f"Votre code d'accès admin est : {code}. Il expire dans {settings.otp_expire_minutes} minutes. Si ce n'est pas vous, ignorez ce message.")
+        background.add_task(send_email, admin.email, "Code d'accès admin / Admin access code",
+                            otp_body(code, "Votre code d'accès à l'espace admin", "Your admin access code"))
     return {"detail": "Si le compte existe, un code a été envoyé à votre e-mail."}
 
 

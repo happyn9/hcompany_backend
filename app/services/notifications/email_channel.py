@@ -8,19 +8,30 @@ actif en production (voir `settings.notifications_configured`).
 
 import logging
 import smtplib
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from app.config import settings
+from app.services.notifications.email_html import auto_html, bilingual, render_html
 
 logger = logging.getLogger("hcompany.notifications")
 
 
-def send_email(to: str, subject: str, body: str) -> None:
+def send_email(to: str, subject: str, body: str, *, html: str | None = None, lang: str = "fr") -> None:
+    """Texte brut + version HTML aux couleurs de H-Company (générée automatiquement si `html` n'est pas fourni)."""
     if not settings.smtp_host:
         logger.warning("[DEV] SMTP non configuré — e-mail simulé à %s: %s | %s", to, subject, body)
         return
 
-    msg = MIMEText(body)
+    try:
+        page = html or auto_html(subject, body, lang)
+    except Exception:  # un défaut de mise en forme ne doit jamais empêcher l'envoi
+        logger.exception("Mise en forme HTML impossible")
+        page = None
+    msg = MIMEMultipart("alternative") if page else MIMEText(body)
+    if page:
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg.attach(MIMEText(page, "html", "utf-8"))
     msg["Subject"] = subject
     msg["From"] = settings.smtp_from
     msg["To"] = to
@@ -62,4 +73,10 @@ def send_otp_code(identifier: str, code: str, channel: str) -> None:
     if channel == "whatsapp":
         send_whatsapp(identifier, message)
     else:
-        send_email(identifier, "Votre code de vérification H-Company", message)
+        send_email(identifier, "Votre code de vérification H-Company / Your H-Company verification code", otp_body(code))
+
+
+def otp_body(code: str, intent_fr: str = "Votre code de vérification H-Company", intent_en: str = "Your H-Company verification code") -> str:
+    m = settings.otp_expire_minutes
+    return bilingual(f"{intent_fr} est : {code}. Il expire dans {m} minutes. Ne le partagez avec personne.",
+                     f"{intent_en} is: {code}. It expires in {m} minutes. Never share it with anyone.")
