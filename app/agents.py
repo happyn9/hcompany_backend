@@ -131,13 +131,18 @@ def module_stats(session: Session, module: str) -> dict:
         for x in session.exec(select(Reservation).where(Reservation.status.in_(("seated", "completed")))).all():
             at = datetime.combine(x.day, datetime.min.time())
             rows.append({"at": at, "code": x.code, "label": f"{x.restaurant_name} · {x.party_size} couverts", "amount": x.preorder_total, "commission": round(x.preorder_total * COMMISSION_PCT / 100, 2), "status": x.status})
+    elif module == "tourism":
+        from app.tourism.models import TourBooking
+        from app.tourism.services import COMMISSION_PCT as TOUR_PCT
+        for x in session.exec(select(TourBooking).where(TourBooking.status.in_(("confirmed", "completed")))).all():
+            rows.append({"at": datetime.combine(x.day, datetime.min.time()), "code": x.code, "label": f"{x.tour_title} · {x.adults + x.children} pers.", "amount": x.total, "commission": round(x.total * TOUR_PCT / 100, 2), "status": x.status})
     elif module == "learning":
         for s in session.exec(select(LearningSubscription).where(LearningSubscription.status.in_(("active", "expired")))).all():
             rows.append({"at": s.paid_at or s.created_at, "code": s.reference, "label": s.plan_name + (f" · {s.org_name}" if s.org_name else ""), "amount": s.amount_pivot, "commission": s.amount_pivot, "status": s.status})
     rows.sort(key=lambda r: r["at"] or datetime.min, reverse=True)
     last30 = [r for r in rows if r["at"] and r["at"] >= cutoff]
     out = {
-        "module": module, "available": module in ("transport", "lodging", "shopping", "learning", "partnerships", "restaurant"),
+        "module": module, "available": module in ("transport", "lodging", "shopping", "learning", "partnerships", "restaurant", "tourism"),
         "gross": round(sum(r["amount"] for r in rows), 2), "commission": round(sum(r["commission"] for r in rows), 2), "count": len(rows),
         "gross_30d": round(sum(r["amount"] for r in last30), 2), "commission_30d": round(sum(r["commission"] for r in last30), 2), "count_30d": len(last30),
         "series": _series([(r["at"], r["amount"]) for r in rows]),

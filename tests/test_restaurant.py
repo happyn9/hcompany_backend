@@ -16,6 +16,7 @@ from sqlmodel import SQLModel, Session  # noqa: E402
 
 from app.agents import module_stats  # noqa: E402
 from app.database import engine  # noqa: E402
+from app.admin_security import require_admin_confirmed  # noqa: E402
 from app.deps import get_current_admin, get_current_user, get_optional_user  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import PartnerModule, User, UserRole  # noqa: E402
@@ -54,6 +55,7 @@ def c():
     app.dependency_overrides[get_current_user] = who
     app.dependency_overrides[get_optional_user] = who
     app.dependency_overrides[get_current_admin] = lambda: _admin(ids)
+    app.dependency_overrides[require_admin_confirmed] = lambda: _admin(ids)
     with TestClient(app) as client:
         client.state = state
         yield client

@@ -29,6 +29,12 @@ from app.transport.routers import admin as transport_admin, operator as transpor
 from app.transport import cargo as transport_cargo
 from app import agents as agents_module
 from app.restaurant.routers import admin as restaurant_admin, owner as restaurant_owner, public as restaurant_public
+from app.tourism.routers import admin as tourism_admin, owner as tourism_owner, public as tourism_public
+from app.crossborder.routers import admin as geo_admin, public as geo_public
+from app.partnerhub import routers as partnerhub
+from app.money import router as money_router, admin as money_admin
+from app import admin_security
+from app.promos import router as promos_router
 from app.lodging.routers import admin as lodging_admin, catalog as lodging_catalog, guest as lodging_guest, host as lodging_host
 from app.services.rate_limit import limiter
 
@@ -240,6 +246,19 @@ app.include_router(lodging_admin.router)
 app.include_router(restaurant_public.router)
 app.include_router(restaurant_owner.router)
 app.include_router(restaurant_admin.router)
+app.include_router(admin_security.router)
+app.include_router(promos_router.router)
+app.include_router(money_router.router)
+app.include_router(money_admin.admin_router)
+app.include_router(money_admin.agent_router)
+app.include_router(partnerhub.router)
+app.include_router(partnerhub.admin_router)
+app.include_router(partnerhub.invite_router)
+app.include_router(geo_public.router)
+app.include_router(geo_admin.router)
+app.include_router(tourism_public.router)
+app.include_router(tourism_owner.router)
+app.include_router(tourism_admin.router)
 app.include_router(transport_public.router)
 app.include_router(transport_operator.router)
 app.include_router(transport_admin.router)

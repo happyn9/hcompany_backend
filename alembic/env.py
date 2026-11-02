@@ -17,6 +17,11 @@ from app import agents as agents_models  # noqa: F401
 from app.auth_core import models as auth_core_models  # noqa: F401
 from app import upload_store  # noqa: F401
 from app.restaurant import models as restaurant_models  # noqa: F401
+from app.tourism import models as tourism_models  # noqa: F401
+from app.crossborder import models as crossborder_models  # noqa: F401
+from app.partnerhub import models as partnerhub_models  # noqa: F401
+from app.money import models as money_models  # noqa: F401
+from app.promos import models as promos_models  # noqa: F401
 
 config = context.config
 
