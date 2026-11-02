@@ -1,13 +1,13 @@
 """H-Shopping — administration : validation des boutiques, catégories,
 agences, commandes et litiges, retraits, réglages, vue d'ensemble."""
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, func, select
 
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin
 from app.models import PartnerApplication, PartnerStatus, User
 from app.shopping import schemas as S
@@ -20,8 +20,6 @@ from app.shopping.services import (
     refund_order, release_escrow, unique_slug, slugify, commission_rate_for,
 )
 from app.shopping.routers.seller import _payout_read
-from app.shopping.cleanup import sweep_orphans
-from app.shopping.routers.seller import UPLOAD_ROOT
 
 router = APIRouter(prefix="/api/v1/shopping/admin", tags=["shopping-admin"])
 
@@ -29,7 +27,7 @@ router = APIRouter(prefix="/api/v1/shopping/admin", tags=["shopping-admin"])
 # --- Vue d'ensemble ----------------------------------------------------------
 
 @router.get("/overview", response_model=S.AdminOverview)
-def overview(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def overview(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     auto_release_overdue(session)
     live = ("paid", "processing", "shipped", "delivered", "completed", "disputed")
     gmv = session.exec(select(func.coalesce(func.sum(ShopOrder.total), 0)).where(ShopOrder.status.in_(live))).one()
@@ -257,7 +255,7 @@ def resolve(code: str, payload: S.AdminResolve, session: Session = Depends(get_s
 # --- Retraits ----------------------------------------------------------------
 
 @router.get("/payouts", response_model=list[S.PayoutRead])
-def payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     stmt = select(ShopPayout)
     if status:
         stmt = stmt.where(ShopPayout.status == status)
@@ -265,7 +263,7 @@ def payouts(status: Optional[str] = None, session: Session = Depends(get_session
 
 
 @router.patch("/payouts/{payout_id}", response_model=S.PayoutRead)
-def update_payout(payout_id: int, payload: S.AdminPayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def update_payout(payout_id: int, payload: S.AdminPayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     p = session.get(ShopPayout, payout_id)
     if not p:
         raise HTTPException(status_code=404, detail="Retrait introuvable.")
@@ -322,12 +320,12 @@ def delete_admin_coupon(coupon_id: int, session: Session = Depends(get_session),
 # --- Réglages ----------------------------------------------------------------
 
 @router.get("/settings")
-def get_settings(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def get_settings(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     return all_settings(session)
 
 
 @router.put("/settings")
-def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     for key, value in payload.model_dump(exclude_none=True).items():
         if key not in DEFAULT_SETTINGS:
             continue
@@ -336,12 +334,3 @@ def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_sessio
         session.add(row)
     session.commit()
     return all_settings(session)
-
-
-# --- Maintenance : images orphelines ----------------------------------------
-
-@router.post("/uploads/cleanup")
-def cleanup_uploads(dry_run: bool = True, min_age_hours: int = 48, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
-    """Supprime les images H-Shopping rattachées à rien (ni article, ni boutique, ni commande).
-    Par défaut en simulation (dry_run=true) : renvoie ce qui serait supprimé, sans rien effacer."""
-    return sweep_orphans(session, UPLOAD_ROOT, timedelta(hours=max(1, min_age_hours)), dry_run=dry_run)

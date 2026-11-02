@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlmodel import Session, func, select
 
 from app.database import get_session
@@ -19,7 +19,6 @@ from app.shopping import schemas as S
 from app.shopping import views
 from app.shopping.cutout import cutout_png
 from app.upload_store import save_upload
-from app.shopping.cleanup import release_if_unreferenced, sweep_in_background
 from app.shopping.models import (
     Coupon, Shop, ShopAgency, ShopCategory, ShopOrder, ShopPayout, ShopProduct, ShopProductImage,
     ShopProductVariant, ShopReview, ShopOrderItem,
@@ -57,7 +56,7 @@ def _active_shop(session: Session, shop_id: int, user: User) -> Shop:
 # --- Images ----------------------------------------------------------------
 
 @router.post("/uploads")
-def upload_image(background: BackgroundTasks, file: UploadFile = File(...), cutout: bool = False, precut: bool = False, user: User = Depends(get_current_user)):
+def upload_image(file: UploadFile = File(...), cutout: bool = False, user: User = Depends(get_current_user)):
     """Téléverse une image (produit, logo, bannière) ; renvoie le chemin à
     enregistrer dans la boutique ou le produit."""
     ext = IMG_TYPES.get(file.content_type or "")
@@ -69,19 +68,6 @@ def upload_image(background: BackgroundTasks, file: UploadFile = File(...), cuto
     if not data.startswith(MAGIC[ext]):
         raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
     cut = False
-    if precut and not cutout:
-        # Détourage fait dans le navigateur : on ne fait pas confiance au client,
-        # on vérifie que c'est bien un PNG avec une vraie part de transparence.
-        try:
-            import io
-            import numpy as np
-            from PIL import Image
-            im = Image.open(io.BytesIO(data))
-            im.load()
-            alpha = np.asarray(im.convert("RGBA"))[..., 3]
-            cut = ext == ".png" and bool((alpha < 20).mean() > 0.05)
-        except Exception:
-            cut = False
     if cutout:  # suppression du fond uni → PNG transparent (nom « -cut »)
         try:
             data, cut = cutout_png(data)
@@ -90,7 +76,6 @@ def upload_image(background: BackgroundTasks, file: UploadFile = File(...), cuto
         ext = ".png"
     name = f"{user.id}-{uuid.uuid4().hex[:12]}{'-cut' if cut else ''}{ext}"
     save_upload(UPLOAD_ROOT, f"shopping/{name}", data)
-    background.add_task(sweep_in_background, UPLOAD_ROOT)  # ménage des orphelins, au plus toutes les 6 h
     return {"path": f"shopping/{name}", "cutout": cut}
 
 
@@ -148,13 +133,11 @@ def update_shop(shop_id: int, payload: S.ShopUpdate, session: Session = Depends(
         if not p:
             raise HTTPException(status_code=422, detail="Numéro mobile money invalide.")
         data["mobile_money_phone"] = p
-    old_media = [shop.logo_path, shop.banner_path]
     for k, v in data.items():
         setattr(shop, k, v.strip() if isinstance(v, str) else v)
     session.add(shop)
     session.commit()
     session.refresh(shop)
-    release_if_unreferenced(session, UPLOAD_ROOT, old_media)  # ancien logo / bannière remplacés
     return views.shop_owner_read(session, shop)
 
 
@@ -175,8 +158,20 @@ def _validate_product(session: Session, payload: S.ProductWrite, user: User) -> 
 
 
 def _apply_product(session: Session, product: ShopProduct, payload: S.ProductWrite) -> None:
+    from app.shopping.services import gross_up, markup_enabled, price_preview
     for f in ("title", "description", "category_id", "price", "compare_at_price", "stock", "sku", "brand", "weight_kg", "attributes", "tags", "model3d", "status"):
         setattr(product, f, getattr(payload, f))
+    rate = None
+    if markup_enabled(session):
+        # Le vendeur saisit ce qu'il veut RECEVOIR ; le prix client inclut la commission, figée ici.
+        shop = session.get(Shop, product.shop_id)
+        rate = price_preview(session, shop, payload.category_id, payload.price)["commission_rate"]
+        product.seller_price, product.commission_rate_locked = payload.price, rate
+        product.price = gross_up(payload.price, rate)
+        if payload.compare_at_price is not None:
+            product.compare_at_price = gross_up(payload.compare_at_price, rate)
+    else:
+        product.seller_price = product.commission_rate_locked = None
     product.colors = ",".join(f"{c.name.strip().replace(',', ' ').replace(':', ' ')}:{c.hex.lower()}" for c in payload.colors)
     product.updated_at = datetime.utcnow()
     session.add(product)
@@ -198,6 +193,9 @@ def _apply_product(session: Session, product: ShopProduct, payload: S.ProductWri
         if row is None:
             row = ShopProductVariant(product_id=product.id, label=v.label)
         row.label, row.sku, row.price, row.stock, row.is_active = v.label.strip(), v.sku.strip(), v.price, v.stock, v.is_active
+        row.seller_price = None
+        if rate is not None and v.price is not None:
+            row.seller_price, row.price = v.price, gross_up(v.price, rate)
         session.add(row)
         session.flush()
         kept.add(row.id)
@@ -205,6 +203,19 @@ def _apply_product(session: Session, product: ShopProduct, payload: S.ProductWri
         if vid not in kept:
             row.is_active = False
             session.add(row)
+
+
+@router.get("/shops/{shop_id}/price-preview")
+def price_preview_route(shop_id: int, price: float = Query(ge=0.5, le=10_000_000), category_id: Optional[int] = None,
+                        session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Ce que le client verra et ce que vous recevrez — visible du vendeur seul, avant publication."""
+    from app.shopping.services import markup_enabled, price_preview
+    shop = _my_shop(session, shop_id, user)
+    pv = price_preview(session, shop, category_id, price)
+    if not markup_enabled(session):  # historique : le client paie `price`, la commission est retenue sur le vendeur
+        fee = round(price * pv["commission_rate"] / 100, 2)
+        return {"mode": "deduct", "seller_price": round(price - fee, 2), "client_price": price, "commission_rate": pv["commission_rate"], "commission_amount": fee}
+    return {"mode": "markup", **pv}
 
 
 @router.get("/shops/{shop_id}/products", response_model=list[S.ProductOwnerRead])
@@ -244,11 +255,9 @@ def update_product(product_id: int, payload: S.ProductWrite, session: Session = 
     if payload.status == "active":
         _active_shop(session, p.shop_id, user)
     _validate_product(session, payload, user)
-    before = session.exec(select(ShopProductImage.path).where(ShopProductImage.product_id == p.id)).all()
     _apply_product(session, p, payload)
     session.commit()
     session.refresh(p)
-    release_if_unreferenced(session, UPLOAD_ROOT, [x for x in before if x not in payload.images])  # photos retirées / remplacées
     return views.product_detail(session, p, user, owner=True)
 
 
@@ -264,6 +273,10 @@ def patch_product(product_id: int, payload: S.ProductStatusPatch, session: Sessi
             if not session.exec(select(ShopProductImage).where(ShopProductImage.product_id == p.id)).first():
                 raise HTTPException(status_code=422, detail="Ajoutez au moins une photo pour publier le produit.")
     data.pop("is_featured", None)  # réservé à l'admin
+    if "price" in data and p.seller_price is not None:  # prix rapide en mode commission incluse : recalcul au taux figé
+        from app.shopping.services import gross_up
+        p.seller_price = data["price"]
+        data["price"] = gross_up(data["price"], p.commission_rate_locked or 0)
     for k, v in data.items():
         setattr(p, k, v)
     p.updated_at = datetime.utcnow()
@@ -276,19 +289,16 @@ def patch_product(product_id: int, payload: S.ProductStatusPatch, session: Sessi
 @router.delete("/products/{product_id}", status_code=204)
 def delete_product(product_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     p = _my_product(session, product_id, user)
-    freed_paths: list[str] = []
     if session.exec(select(ShopOrderItem).where(ShopOrderItem.product_id == p.id)).first():
         p.status = "archived"  # déjà commandé : on archive pour garder l'historique
         session.add(p)
     else:
         for row in session.exec(select(ShopProductImage).where(ShopProductImage.product_id == p.id)).all():
-            freed_paths.append(row.path)
             session.delete(row)
         for row in session.exec(select(ShopProductVariant).where(ShopProductVariant.product_id == p.id)).all():
             session.delete(row)
         session.delete(p)
     session.commit()
-    release_if_unreferenced(session, UPLOAD_ROOT, freed_paths)
 
 
 # --- Commandes ---------------------------------------------------------------

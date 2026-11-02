@@ -9,6 +9,7 @@ from app.crossborder import services as svc
 from app.crossborder.models import Country, FxRate
 from app.crossborder.routers.public import country_read
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin
 from app.models import User
 
@@ -32,7 +33,7 @@ class RateIn(BaseModel):
 
 
 @router.get("/overview")
-def overview(session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def overview(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     svc.ensure_seed(session)
     countries = session.exec(select(Country).order_by(Country.sort_order, Country.name_fr)).all()
     rates = session.exec(select(FxRate).order_by(FxRate.currency)).all()
@@ -43,7 +44,7 @@ def overview(session: Session = Depends(get_session), admin: User = Depends(get_
 
 
 @router.put("/countries/{code}")
-def upsert_country(code: str, payload: CountryIn, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def upsert_country(code: str, payload: CountryIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     code = code.upper()
     if len(code) != 2 or not code.isalpha():
         raise HTTPException(status_code=422, detail="Code pays ISO à 2 lettres.")
@@ -58,7 +59,7 @@ def upsert_country(code: str, payload: CountryIn, session: Session = Depends(get
 
 
 @router.put("/rates/{currency}")
-def set_rate(currency: str, payload: RateIn, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def set_rate(currency: str, payload: RateIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     currency = currency.upper()
     if len(currency) != 3 or not currency.isalpha():
         raise HTTPException(status_code=422, detail="Code devise ISO à 3 lettres.")

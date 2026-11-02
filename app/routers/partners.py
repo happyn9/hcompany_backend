@@ -13,6 +13,7 @@ from app.config import settings
 from sqlmodel import Session, select
 
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin, get_current_agent, get_current_partner, get_current_user
 from app.models import (
     AccountStatus,
@@ -189,7 +190,7 @@ def admin_list_applications(
 @router.get("/admin/payments", response_model=List[PaymentRead])
 def admin_list_payments(
     session: Session = Depends(get_session),
-    _admin: User = Depends(get_current_admin),
+    _admin: User = Depends(require_admin_confirmed),
 ):
     # Doit être déclarée AVANT /admin/{application_id} ci-dessous — les deux
     # ont la même forme (/admin/X), et FastAPI teste les routes dans
@@ -1010,7 +1011,7 @@ def admin_add_revenue(
     app_id: int,
     payload: RevenueEntryCreate,
     session: Session = Depends(get_session),
-    _admin: User = Depends(get_current_admin),
+    _admin: User = Depends(require_admin_confirmed),
 ):
     app_row = session.get(PartnerApp, app_id)
     if not app_row:

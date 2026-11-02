@@ -101,9 +101,14 @@ def product_detail(session: Session, p: ShopProduct, user: Optional[User] = None
         is_favorite=p.id in favorite_ids(session, user), created_at=p.created_at, status=p.status,
     )
     if owner:
-        data["price"] = p.price
+        included = p.seller_price is not None
+        data["price"] = p.seller_price if included else p.price
+        if included:
+            data["variants"] = [S.VariantRead(id=v.id, label=v.label, sku=v.sku,
+                                              price=(v.seller_price if v.seller_price is not None else v.price) if v.price is not None else p.seller_price,
+                                              stock=v.stock, is_active=v.is_active) for v in variants]
         data["stock"] = p.stock if not has_var else sum(v.stock for v in variants if v.is_active)
-        return S.ProductOwnerRead(**data, category_id=p.category_id)
+        return S.ProductOwnerRead(**data, category_id=p.category_id, client_price=p.price if included else None, commission_included=included)
     return S.ProductDetail(**data)
 
 

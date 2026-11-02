@@ -1,0 +1,188 @@
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlmodel import Session, or_, select
+
+from app.crossborder import services as geo
+from app.database import get_session
+from app.deps import get_current_user
+from app.models import User
+from app.money import services as svc
+from app.money.models import MoneyTransfer
+from app.money.provider import get_provider
+
+router = APIRouter(prefix="/api/v1/money", tags=["money"])
+
+
+def _read(t: MoneyTransfer, viewer_id: int) -> dict:
+    role = "requester" if (t.kind == "request" and t.user_id == viewer_id) else ("payer" if t.payer_user_id == viewer_id or (t.kind == "send" and t.user_id == viewer_id) else "other")
+    return {"code": t.code, "kind": t.kind, "role": role, "status": t.status, "from_country": t.from_country, "to_country": t.to_country,
+            "send_currency": t.send_currency, "send_amount": t.send_amount, "fee": t.fee, "total_paid": t.total_paid,
+            "receive_currency": t.receive_currency, "receive_amount": t.receive_amount, "rate": t.rate, "counterpart_name": t.counterpart_name,
+            "counterpart_phone": t.counterpart_phone, "note": t.note, "failure_reason": t.failure_reason, "created_at": t.created_at.isoformat(),
+            "expires_at": t.expires_at.isoformat() if t.expires_at else None, "simulated": t.provider == "simulated"}
+
+
+def _require_verified(user: User) -> None:
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Vérifiez d'abord votre e-mail pour utiliser H-Money.")
+
+
+@router.get("/corridors")
+def corridors(session: Session = Depends(get_session)):
+    geo.ensure_seed(session)
+    return {"countries": ["ZM", "CD"], "operators": {k: [{"key": a, "label": b} for a, b in v.items()] for k, v in svc.OPERATORS.items()},
+            "limits_usd": {"min": svc.MIN_USD, "max": svc.MAX_USD, "daily": svc.DAILY_MAX_USD}, "fee_pct": svc.FEE_PCT,
+            "currencies": {c: svc._currency(session, c) for c in ("ZM", "CD")}, "simulated": get_provider().simulated}
+
+
+@router.get("/quote")
+def quote(amount: float = Query(gt=0, le=10_000_000), source: str = Query(alias="from", min_length=2, max_length=2),
+          target: str = Query(alias="to", min_length=2, max_length=2), mode: str = Query(default="send", pattern="^(send|receive)$"),
+          session: Session = Depends(get_session)):
+    """mode=send : le payeur envoie `amount`. mode=receive : le bénéficiaire doit recevoir `amount`."""
+    return svc.quote_send(session, source, target, amount) if mode == "send" else svc.quote_receive(session, source, target, amount)
+
+
+class SendIn(BaseModel):
+    to_country: str = Field(min_length=2, max_length=2)
+    from_country: str = Field(min_length=2, max_length=2)
+    amount: float = Field(gt=0, le=10_000_000)
+    beneficiary_name: str = Field(min_length=2, max_length=120)
+    beneficiary_phone: str = Field(min_length=6, max_length=24)
+    beneficiary_operator: str
+    pay_phone: str = Field(min_length=6, max_length=24)
+    pay_operator: str
+    note: str = Field(default="", max_length=200)
+
+
+def _run_payment(session: Session, t: MoneyTransfer, payer_country: str) -> None:
+    """Encaisse chez le payeur, puis verse chez le bénéficiaire ; remboursement si le versement échoue."""
+    prov = get_provider()
+    c = prov.collect(country=payer_country, currency=t.send_currency, amount=t.total_paid, phone=t.pay_phone, operator=t.pay_operator, reference=t.code)
+    if not c.ok:
+        t.status, t.failure_reason = "cancelled", c.reason
+        return
+    t.status, t.provider_ref = "collected", c.ref
+    p = prov.payout(country=t.to_country, currency=t.receive_currency, amount=t.receive_amount, phone=t.counterpart_phone, operator=t.counterpart_operator, reference=t.code)
+    if p.ok:
+        t.status = "completed"
+    else:
+        prov.refund(ref=c.ref, amount=t.total_paid)
+        t.status, t.failure_reason = "refunded", p.reason + " Vous avez été remboursé."
+
+
+@router.post("/transfers", status_code=201)
+def send(payload: SendIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    _require_verified(user)
+    frm, to = payload.from_country.upper(), payload.to_country.upper()
+    q = svc.quote_send(session, frm, to, payload.amount)
+    svc.check_operator(frm, payload.pay_operator)
+    svc.check_operator(to, payload.beneficiary_operator)
+    svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
+    t = MoneyTransfer(code=svc.new_code(), kind="send", user_id=user.id, payer_user_id=user.id, from_country=frm, to_country=to,
+                      send_currency=q["send_currency"], send_amount=q["send_amount"], fee=q["fee"], total_paid=q["total_paid"],
+                      receive_currency=q["receive_currency"], receive_amount=q["receive_amount"], rate=q["rate"],
+                      counterpart_name=payload.beneficiary_name.strip(), counterpart_phone=geo.clean_phone(payload.beneficiary_phone),
+                      counterpart_operator=payload.beneficiary_operator, pay_phone=geo.clean_phone(payload.pay_phone),
+                      pay_operator=payload.pay_operator, note=payload.note.strip(), provider=get_provider().name)
+    _run_payment(session, t, frm)
+    t.updated_at = datetime.utcnow()
+    session.add(t); session.commit(); session.refresh(t)
+    return _read(t, user.id)
+
+
+class RequestIn(BaseModel):
+    payer_country: str = Field(min_length=2, max_length=2)
+    receiver_country: str = Field(min_length=2, max_length=2)
+    amount: float = Field(gt=0, le=10_000_000)  # ce que vous voulez RECEVOIR (devise de votre pays)
+    receive_phone: str = Field(min_length=6, max_length=24)
+    receive_operator: str
+    payer_name: str = Field(min_length=2, max_length=120)
+    payer_phone: str = Field(default="", max_length=24)
+    note: str = Field(default="", max_length=200)
+
+
+@router.post("/requests", status_code=201)
+def request_money(payload: RequestIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    _require_verified(user)
+    pc, rc = payload.payer_country.upper(), payload.receiver_country.upper()
+    q = svc.quote_receive(session, pc, rc, payload.amount)
+    svc.check_operator(rc, payload.receive_operator)
+    t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
+                      receive_currency=q["receive_currency"], receive_amount=q["receive_amount"],
+                      counterpart_name=payload.payer_name.strip(), counterpart_phone=geo.clean_phone(payload.payer_phone) if payload.payer_phone else "",
+                      # le numéro de réception du demandeur est conservé dans pay_phone/pay_operator côté « receveur »
+                      pay_phone="", pay_operator="", note=payload.note.strip(), status="awaiting_payer", provider=get_provider().name,
+                      expires_at=datetime.utcnow() + timedelta(days=svc.REQUEST_TTL_DAYS))
+    t.provider_ref = f"{geo.clean_phone(payload.receive_phone)}|{payload.receive_operator}"  # destination du versement, jusqu'au paiement
+    session.add(t); session.commit(); session.refresh(t)
+    return _read(t, user.id)
+
+
+def _get_request(session: Session, code: str) -> MoneyTransfer:
+    t = session.exec(select(MoneyTransfer).where(MoneyTransfer.code == code.upper(), MoneyTransfer.kind == "request")).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Demande introuvable.")
+    if t.status == "awaiting_payer" and t.expires_at and t.expires_at < datetime.utcnow():
+        t.status = "expired"; session.add(t); session.commit()
+    return t
+
+
+@router.get("/requests/{code}")
+def view_request(code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Aperçu pour la personne sollicitée : combien elle paierait, dans sa devise."""
+    t = _get_request(session, code)
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount)
+    asker = session.get(User, t.user_id)
+    return {**_read(t, user.id), "asker_name": (asker.full_name if asker else "") or "Un proche", "quote": q}
+
+
+class PayIn(BaseModel):
+    pay_phone: str = Field(min_length=6, max_length=24)
+    pay_operator: str
+
+
+@router.post("/requests/{code}/pay")
+def pay_request(code: str, payload: PayIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    _require_verified(user)
+    t = _get_request(session, code)
+    if t.status != "awaiting_payer":
+        raise HTTPException(status_code=409, detail="Cette demande n'est plus en attente.")
+    if t.user_id == user.id:
+        raise HTTPException(status_code=422, detail="Vous ne pouvez pas payer votre propre demande.")
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount)
+    svc.check_operator(t.from_country, payload.pay_operator)
+    svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
+    dest_phone, dest_op = t.provider_ref.split("|", 1)
+    t.payer_user_id, t.send_amount, t.fee, t.total_paid, t.rate = user.id, q["send_amount"], q["fee"], q["total_paid"], q["rate"]
+    t.pay_phone, t.pay_operator = geo.clean_phone(payload.pay_phone), payload.pay_operator
+    t.counterpart_phone, t.counterpart_operator = dest_phone, dest_op  # versement vers le demandeur
+    _run_payment(session, t, t.from_country)
+    if t.status == "cancelled":  # paiement refusé : la demande reste ouverte pour un nouvel essai
+        reason, t.status, t.payer_user_id = t.failure_reason, "awaiting_payer", None
+        session.add(t); session.commit()
+        raise HTTPException(status_code=402, detail=reason or "Paiement refusé.")
+    t.updated_at = datetime.utcnow()
+    session.add(t); session.commit(); session.refresh(t)
+    return _read(t, user.id)
+
+
+@router.post("/requests/{code}/decline")
+def decline_request(code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    t = _get_request(session, code)
+    if t.status != "awaiting_payer":
+        raise HTTPException(status_code=409, detail="Cette demande n'est plus en attente.")
+    t.status = "cancelled" if t.user_id == user.id else "declined"
+    t.updated_at = datetime.utcnow()
+    session.add(t); session.commit()
+    return _read(t, user.id)
+
+
+@router.get("/transfers")
+def mine(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    rows = session.exec(select(MoneyTransfer).where(or_(MoneyTransfer.user_id == user.id, MoneyTransfer.payer_user_id == user.id))
+                        .order_by(MoneyTransfer.created_at.desc()).limit(100)).all()
+    return [_read(t, user.id) for t in rows]

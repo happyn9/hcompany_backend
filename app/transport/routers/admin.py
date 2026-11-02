@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, func, select
 
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin
 from app.models import User
 from app.transport import schemas as S
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/api/v1/transport/admin", tags=["transport-admin"])
 
 
 @router.get("/overview", response_model=S.AdminOverview)
-def overview(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def overview(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     expire_overdue(session)
     live = ("confirmed", "boarded", "completed", "disputed")
     gmv = session.exec(select(func.coalesce(func.sum(TransportBooking.total), 0)).where(TransportBooking.status.in_(live))).one()
@@ -143,7 +144,7 @@ def resolve(code: str, payload: S.ResolveRequest, session: Session = Depends(get
 
 
 @router.get("/payouts", response_model=list[S.PayoutRead])
-def payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     stmt = select(TransportPayout)
     if status:
         stmt = stmt.where(TransportPayout.status == status)
@@ -151,7 +152,7 @@ def payouts(status: Optional[str] = None, session: Session = Depends(get_session
 
 
 @router.patch("/payouts/{payout_id}", response_model=S.PayoutRead)
-def update_payout(payout_id: int, payload: S.PayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def update_payout(payout_id: int, payload: S.PayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     p = session.get(TransportPayout, payout_id)
     if not p:
         raise HTTPException(status_code=404, detail="Retrait introuvable.")
@@ -184,12 +185,12 @@ def moderate(review_id: int, hidden: bool = True, session: Session = Depends(get
 
 
 @router.get("/settings")
-def get_settings(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def get_settings(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     return all_settings(session)
 
 
 @router.put("/settings")
-def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     for k, v in payload.values.items():
         if k not in DEFAULT_SETTINGS:
             raise HTTPException(status_code=422, detail=f"Réglage inconnu : {k}")

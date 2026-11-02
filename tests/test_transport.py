@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import SQLModel, Session  # noqa: E402
 
 from app.database import engine  # noqa: E402
+from app.admin_security import require_admin_confirmed  # noqa: E402
 from app.deps import get_current_admin, get_current_user, get_optional_user  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import PartnerModule, User, UserRole  # noqa: E402
@@ -45,6 +46,7 @@ def c():
     app.dependency_overrides[get_current_user] = lambda: _user(users[state["as"]])
     app.dependency_overrides[get_optional_user] = lambda: _user(users[state["as"]])
     app.dependency_overrides[get_current_admin] = lambda: _user(users["admin"])
+    app.dependency_overrides[require_admin_confirmed] = lambda: _user(users["admin"])
     with TestClient(app) as client:
         client.state = state
         yield client

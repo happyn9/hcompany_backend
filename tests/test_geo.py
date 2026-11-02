@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import SQLModel, Session  # noqa: E402
 
 from app.database import engine  # noqa: E402
+from app.admin_security import require_admin_confirmed  # noqa: E402
 from app.deps import get_current_admin, get_current_user  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import User, UserRole  # noqa: E402
@@ -33,6 +34,7 @@ def c():
             return s.get(User, ids[0])
     app.dependency_overrides[get_current_user] = _user
     app.dependency_overrides[get_current_admin] = _admin
+    app.dependency_overrides[require_admin_confirmed] = _admin
     yield TestClient(app)
     app.dependency_overrides.clear()
 

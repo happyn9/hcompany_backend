@@ -102,7 +102,10 @@ class ShopProduct(SQLModel, table=True):
     category_id: Optional[int] = Field(default=None, foreign_key="shopcategory.id", index=True)
     title: str = Field(index=True)
     description: str = ""
-    price: float
+    price: float  # prix payé par le client (commission incluse en mode « markup »)
+    # Mode « commission incluse » : prix que le vendeur veut RECEVOIR, et taux figé à la publication.
+    seller_price: Optional[float] = None
+    commission_rate_locked: Optional[float] = None
     compare_at_price: Optional[float] = None  # ancien prix barré
     stock: int = 0  # utilisé quand le produit n'a pas de variantes
     sku: str = ""
@@ -136,6 +139,7 @@ class ShopProductVariant(SQLModel, table=True):
     label: str  # ex: « M · Rouge »
     sku: str = ""
     price: Optional[float] = None  # vide = prix du produit
+    seller_price: Optional[float] = None  # mode « commission incluse »
     stock: int = 0
     is_active: bool = True
 

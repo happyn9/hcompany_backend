@@ -44,6 +44,8 @@ DEFAULT_SETTINGS = {
     "dispute_window_days": "7",      # délai pour ouvrir un litige après livraison
     "min_payout": "50",              # retrait minimum (monnaie pivot)
     "max_items_per_order": "50",
+    # deduct = commission retenue sur le vendeur (historique) ; markup = incluse dans le prix affiché au client
+    "commission_mode": "deduct",
 }
 
 
@@ -92,6 +94,33 @@ def commission_rate_for(session: Session, shop: Shop, category_rate: Optional[fl
     if category_rate is not None:
         return float(category_rate)
     return get_float(session, "commission_rate")
+
+
+# --- Commission incluse dans le prix (mode « markup ») ---------------------
+
+def markup_enabled(session: Session) -> bool:
+    return get_setting(session, "commission_mode") == "markup"
+
+
+def gross_up(seller_price: float, rate: float) -> float:
+    """Prix client tel que la commission = `rate` % du prix affiché : le vendeur reçoit `seller_price`."""
+    import math
+    rate = min(max(float(rate), 0.0), 90.0)
+    return math.ceil(float(seller_price) / (1 - rate / 100) * 100 - 1e-9) / 100
+
+
+def price_preview(session: Session, shop: Shop, category_id: Optional[int], seller_price: float) -> dict:
+    cat = session.get(ShopCategoryModel, category_id) if category_id else None
+    rate = commission_rate_for(session, shop, cat.commission_rate if cat else None)
+    client = gross_up(seller_price, rate)
+    return {"seller_price": money(seller_price), "client_price": client, "commission_rate": rate, "commission_amount": money(client - seller_price)}
+
+
+def seller_unit(product: ShopProduct, variant: Optional[ShopProductVariant]) -> Optional[float]:
+    """Part du vendeur par unité si la ligne est en mode « commission incluse », sinon None."""
+    if variant is not None and variant.price is not None:
+        return variant.seller_price
+    return product.seller_price
 
 
 # --- Catalogue --------------------------------------------------------------
@@ -237,6 +266,7 @@ def build_quote(
                 raise HTTPException(status_code=422, detail=f"Couleur indisponible pour « {product.title} ».")
             label = f"{label} · {match['name']}" if label else match["name"]
         g["lines"].append({
+            "_su": seller_unit(product, variant), "_qty": qty,
             "product_id": product.id, "variant_id": variant.id if variant else None,
             "title": product.title, "variant_label": label,
             "image": imgs[0] if imgs else None, "unit_price": money(price), "quantity": qty,
@@ -278,6 +308,11 @@ def build_quote(
         # quand la remise est financée par la plateforme, après remise sinon.
         gross_comm = 0.0
         for ln in g["lines"]:
+            su = ln.pop("_su", None)
+            qty_ln = ln.pop("_qty", 1)
+            if su is not None:  # commission incluse dans le prix, figée à la publication
+                gross_comm += max(ln["line_total"] - su * qty_ln, 0.0)
+                continue
             cat = session.get(ShopCategoryModel, ln["category_id"]) if ln["category_id"] else None
             rate = commission_rate_for(session, shop, cat.commission_rate if cat else None)
             gross_comm += ln["line_total"] * rate / 100

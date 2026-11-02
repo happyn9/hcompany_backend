@@ -12,13 +12,12 @@ from app.deps import get_current_user
 from app.lodging.models import LodgeHost
 from app.models import PartnerApplication, PartnerModule, PartnerStatus, User
 from app.restaurant.models import Restaurant
-from app.tourism.models import Tour
 from app.shopping.models import Shop
 from app.transport.models import TransportOperator
 
 router = APIRouter(prefix="/api/v1/partner/modules", tags=["partner-modules"])
 
-MODULES = ("lodging", "transport", "shopping", "learning", "restaurant", "tourism")
+MODULES = ("lodging", "transport", "shopping", "learning", "restaurant")
 
 
 def _application(session: Session, user: User) -> Optional[PartnerApplication]:
@@ -46,8 +45,6 @@ def _profile_exists(session: Session, user: User, module: str) -> bool:
         return session.exec(select(Shop).where(Shop.owner_id == user.id)).first() is not None
     if module == "restaurant":
         return session.exec(select(Restaurant).where(Restaurant.owner_id == user.id)).first() is not None
-    if module == "tourism":
-        return session.exec(select(Tour).where(Tour.owner_id == user.id)).first() is not None
     return False
 
 
@@ -78,14 +75,6 @@ def _bootstrap(session: Session, user: User, app: PartnerApplication, module: st
             user_id=user.id, name=app.company[:120], phone=app.phone or "", whatsapp=app.phone or "", city="",
             partner_application_id=app.id, status="approved", is_verified=True, approved_at=datetime.utcnow(),
         ))
-    elif module == "shopping" and not _profile_exists(session, user, module):
-        from app.shopping.services import unique_slug as shop_slug
-        session.add(Shop(slug=shop_slug(session, Shop, app.company), owner_id=user.id, name=app.company[:120], phone=app.phone or "", whatsapp=app.phone or "",
-                         email=app.email, address=app.address or "", partner_application_id=app.id, status="approved", approved_at=datetime.utcnow()))
-    elif module == "restaurant" and not _profile_exists(session, user, module):
-        from app.shopping.services import unique_slug as rest_slug
-        session.add(Restaurant(slug=rest_slug(session, Restaurant, app.company), owner_id=user.id, partner_application_id=app.id, name=app.company[:120],
-                               phone=app.phone or "", whatsapp=app.phone or "", address=app.address or ""))
 
 
 @router.get("")
@@ -100,8 +89,6 @@ def activate(module: str, session: Session = Depends(get_session), user: User = 
     app = _application(session, user)
     if not app or app.status != PartnerStatus.approved:
         raise HTTPException(status_code=403, detail="Votre partenariat doit d'abord être accepté par H-Company.")
-    from app.partnerhub.services import check_can_activate
-    check_can_activate(session, user, module)  # plan Standard : 2 apps maximum
     row = session.exec(select(PartnerModule).where(PartnerModule.user_id == user.id, PartnerModule.module == module)).first()
     if row:
         row.active, row.deactivated_at = True, None

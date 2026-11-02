@@ -43,19 +43,17 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # True obligatoire en production (HTTPS)
 
     # --- CORS ---
-    frontend_url: str = "https://hcompany-global.vercel.app"  # base des liens envoyés par e-mail (invitation partenaire)
+    frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
     partner_invite_required: bool = True  # la candidature partenaire passe par un lien envoyé par H-Company
-    allowed_origins: str = "https://hcompany-global.vercel.app"
+    money_provider: str = "simulated"  # simulated tant qu'aucun agrégateur n'est branché
+    allowed_origins: str = "http://localhost:5173,http://localhost:4173"
 
     # --- OTP ---
     otp_length: int = 6
     otp_expire_minutes: int = 10
     otp_max_attempts: int = 5
 
-    # --- Email ---
-    # Resend (API HTTPS) : prioritaire sur SMTP si renseigné.
-    resend_api_key: Optional[str] = None
-    # SMTP (repli)
+    # --- Email (SMTP) ---
     smtp_host: Optional[str] = None
     smtp_port: int = 587
     smtp_user: Optional[str] = None
@@ -134,7 +132,7 @@ class Settings(BaseSettings):
 
     @property
     def notifications_configured(self) -> bool:
-        return bool(self.resend_api_key or self.smtp_host or self.twilio_account_sid)
+        return bool(self.smtp_host or self.twilio_account_sid)
 
 
 @lru_cache

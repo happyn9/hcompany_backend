@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, func, select
 
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin
 from app.lodging import schemas as S
 from app.lodging import views
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/api/v1/lodging/admin", tags=["lodging-admin"])
 
 
 @router.get("/overview", response_model=S.AdminOverview)
-def overview(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def overview(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     expire_overdue(session)
     live = ("confirmed", "checked_in", "completed", "disputed")
     gmv = session.exec(select(func.coalesce(func.sum(Booking.total), 0)).where(Booking.status.in_(live))).one()
@@ -159,7 +160,7 @@ def resolve_booking(code: str, payload: S.AdminResolve, session: Session = Depen
 # --- Retraits -------------------------------------------------------------------
 
 @router.get("/payouts", response_model=list[S.PayoutRead])
-def list_payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def list_payouts(status: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     stmt = select(LodgePayout)
     if status:
         stmt = stmt.where(LodgePayout.status == status)
@@ -167,7 +168,7 @@ def list_payouts(status: Optional[str] = None, session: Session = Depends(get_se
 
 
 @router.patch("/payouts/{payout_id}", response_model=S.PayoutRead)
-def update_payout(payout_id: int, payload: S.AdminPayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def update_payout(payout_id: int, payload: S.AdminPayoutUpdate, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     p = session.get(LodgePayout, payout_id)
     if not p:
         raise HTTPException(status_code=404, detail="Retrait introuvable.")
@@ -209,12 +210,12 @@ def moderate_review(review_id: int, hidden: bool, session: Session = Depends(get
 # --- Réglages ---------------------------------------------------------------------
 
 @router.get("/settings")
-def get_settings(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def get_settings(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     return all_settings(session)
 
 
 @router.put("/settings")
-def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def put_settings(payload: S.SettingsWrite, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     for key, value in payload.values.items():
         if key not in DEFAULT_SETTINGS:
             raise HTTPException(status_code=422, detail=f"Réglage inconnu : {key}")

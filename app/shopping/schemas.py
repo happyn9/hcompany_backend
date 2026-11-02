@@ -385,6 +385,9 @@ class ProductWrite(BaseModel):
 
 class ProductOwnerRead(ProductDetail):
     category_id: Optional[int] = None
+    # Mode « commission incluse » : `price` = ce que vous recevez ; `client_price` = prix affiché à l'acheteur.
+    client_price: Optional[float] = None
+    commission_included: bool = False
 
 
 class ProductStatusPatch(BaseModel):
@@ -537,6 +540,7 @@ class AdminPayoutUpdate(BaseModel):
 
 class SettingsWrite(BaseModel):
     commission_rate: Optional[float] = Field(default=None, ge=0, le=60)
+    commission_mode: Optional[str] = Field(default=None, pattern="^(deduct|markup)$")
     free_shipping_threshold: Optional[float] = Field(default=None, ge=0)
     auto_release_days: Optional[int] = Field(default=None, ge=1, le=60)
     dispute_window_days: Optional[int] = Field(default=None, ge=1, le=60)

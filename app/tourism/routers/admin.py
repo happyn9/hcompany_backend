@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, func, select
 
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin
 from app.models import User
 from app.tourism import services as svc
@@ -38,7 +39,7 @@ def _get(session: Session, tid: int) -> Tour:
 
 
 @router.get("/overview")
-def overview(session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def overview(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     counts = {s: int(session.exec(select(func.count(Tour.id)).where(Tour.status == s)).one()) for s in TOUR_STATUSES}
     cutoff = svc.local_now().date() - timedelta(days=30)
     rows = session.exec(select(TourBooking).where(TourBooking.day >= cutoff)).all()

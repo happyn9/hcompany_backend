@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import SQLModel, Session, select  # noqa: E402
 
 from app.database import engine  # noqa: E402
+from app.admin_security import require_admin_confirmed  # noqa: E402
 from app.deps import get_current_admin, get_current_partner, get_current_user, get_optional_user  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import PartnerApplication, PartnerModule, PartnerStatus, User, UserRole  # noqa: E402
@@ -59,6 +60,7 @@ def ctx():
     app.dependency_overrides[get_current_user] = _current
     app.dependency_overrides[get_optional_user] = lambda: _current()
     app.dependency_overrides[get_current_admin] = lambda: _user(users["admin"])
+    app.dependency_overrides[require_admin_confirmed] = lambda: _user(users["admin"])
     app.dependency_overrides[get_current_partner] = _partner
     with TestClient(app) as c:
         c.state, c.partner_id = state, agency_partner

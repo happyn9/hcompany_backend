@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.database import get_session
+from app.admin_security import require_admin_confirmed
 from app.deps import get_current_admin, get_current_partner, get_current_user
 from app.models import PartnerApplication, PartnerModule, User
 from app.partnerhub import services as svc
@@ -144,7 +145,7 @@ class PlanIn(BaseModel):
 
 
 @admin_router.get("/requests")
-def pending_requests(session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def pending_requests(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     plans = session.exec(select(PartnerPlan).where(PartnerPlan.upgrade_requested_at != None, PartnerPlan.plan != "pro")).all()  # noqa: E711
     feats = session.exec(select(PartnerFeature).where(PartnerFeature.status == "requested")).all()
     def who(uid):
@@ -155,7 +156,7 @@ def pending_requests(session: Session = Depends(get_session), admin: User = Depe
 
 
 @admin_router.put("/users/{user_id}/plan")
-def set_plan(user_id: int, payload: PlanIn, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def set_plan(user_id: int, payload: PlanIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     if session.get(User, user_id) is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
     plan = svc.get_plan(session, user_id)
@@ -174,7 +175,7 @@ class FeatureDecision(BaseModel):
 
 
 @admin_router.put("/features/{feature_id}")
-def decide_feature(feature_id: int, payload: FeatureDecision, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def decide_feature(feature_id: int, payload: FeatureDecision, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     f = session.get(PartnerFeature, feature_id)
     if f is None:
         raise HTTPException(status_code=404, detail="Demande introuvable.")
@@ -192,7 +193,7 @@ class InviteIn(BaseModel):
 
 
 @admin_router.post("/invites", status_code=201)
-def create_invite(payload: InviteIn, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def create_invite(payload: InviteIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     token = secrets.token_urlsafe(24)
     inv = ApplicationInvite(token_hash=svc.hash_token(token), email=payload.email.lower(), note=payload.note, created_by=admin.id,
                             expires_at=datetime.utcnow() + timedelta(days=payload.days))
@@ -206,7 +207,7 @@ def create_invite(payload: InviteIn, session: Session = Depends(get_session), ad
 
 
 @admin_router.get("/invites")
-def list_invites(session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+def list_invites(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     rows = session.exec(select(ApplicationInvite).order_by(ApplicationInvite.created_at.desc()).limit(200)).all()
     return [{"id": i.id, "email": i.email, "created_at": i.created_at.isoformat(), "expires_at": i.expires_at.isoformat(),
              "used": bool(i.used_at), "expired": i.expires_at < datetime.utcnow() and not i.used_at} for i in rows]
