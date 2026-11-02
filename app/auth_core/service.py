@@ -20,7 +20,7 @@ from app.config import settings
 
 ALGORITHM = "HS256"
 ISSUER = "h-company-auth"
-OTP_PURPOSES = ("login", "register", "reset_password")
+OTP_PURPOSES = ("login", "register", "reset_password", "admin_confirm")
 
 # --- Mots de passe ----------------------------------------------------------------
 

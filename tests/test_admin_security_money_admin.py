@@ -88,3 +88,24 @@ def test_agents_per_country(c):
     c.delete(f"{A}/agents/{c.get(f'{A}/agents').json()[0]['id']}")
     c.st["as"] = "agent"
     assert c.get(f"{G}/me").status_code == 403
+
+
+def test_admin_confirm_by_email_code(c, monkeypatch):
+    """Un admin sans mot de passe utilisable peut confirmer avec un code envoyé par e-mail."""
+    from fastapi import HTTPException
+    from app.auth_core import service as svc
+    monkeypatch.setattr(svc, "create_otp", lambda s, e, p: "123456" if p == "admin_confirm" else None)
+    monkeypatch.setattr("app.admin_security.send_email", lambda *a, **k: None)
+    def fake_verify(s, e, p, code):
+        if (p, code) != ("admin_confirm", "123456"):
+            raise HTTPException(400, "Code invalide ou expiré.")
+        return {}
+    monkeypatch.setattr(svc, "verify_otp", fake_verify)
+    c.st["as"] = "boss"
+    assert c.post("/api/v1/admin-security/otp").status_code == 202
+    assert c.post("/api/v1/admin-security/confirm-otp", json={"code": "000000"}).status_code == 400
+    r = c.post("/api/v1/admin-security/confirm-otp", json={"code": "123456"})
+    assert r.status_code == 200 and r.json()["confirm_token"]
+    c.st["as"] = "client"
+    assert c.post("/api/v1/admin-security/otp").status_code == 403  # un non-admin ne peut pas demander de code
+    c.st["as"] = "boss"

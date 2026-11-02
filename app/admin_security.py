@@ -3,7 +3,7 @@ L'admin saisit son mot de passe → jeton de 10 minutes, envoyé ensuite dans l'
 Les routes protégées répondent 428 sans jeton valide ; les tentatives comptent dans le verrouillage anti brute-force."""
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlmodel import Session
@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import get_session
 from app.deps import get_current_admin
 from app.models import User
+from app.services.notifications import send_email
 from app.services.rate_limit import limiter
 
 TTL = timedelta(minutes=10)
@@ -32,9 +33,35 @@ def confirm(request: Request, payload: ConfirmIn, session: Session = Depends(get
         if exc.status_code == 429:
             raise
         raise HTTPException(status_code=403, detail="Mot de passe incorrect.")
+    return _issue(admin)
+
+
+def _issue(admin: User) -> dict:
     exp = datetime.utcnow() + TTL
     token = jwt.encode({"type": "admin_confirm", "uid": admin.id, "exp": exp}, settings.secret_key, algorithm=settings.algorithm)
     return {"confirm_token": token, "expires_in": int(TTL.total_seconds())}
+
+
+class CodeIn(BaseModel):
+    code: str = Field(min_length=4, max_length=10)
+
+
+@router.post("/otp", status_code=202)
+@limiter.limit("3/minute")
+def send_code(request: Request, background: BackgroundTasks, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+    """Alternative au mot de passe (compte sans mot de passe, ou oublié) : code à usage unique envoyé à l'e-mail de l'admin connecté."""
+    code = central_auth.create_otp(session, admin.email, "admin_confirm")
+    if code:
+        background.add_task(send_email, admin.email, "Code d'accès à l'espace admin H-Company",
+                            f"Votre code d'accès admin est : {code}. Il expire dans {settings.otp_expire_minutes} minutes. Si ce n'est pas vous, ignorez ce message.")
+    return {"detail": "Si le compte existe, un code a été envoyé à votre e-mail."}
+
+
+@router.post("/confirm-otp")
+@limiter.limit("10/minute")
+def confirm_code(request: Request, payload: CodeIn, session: Session = Depends(get_session), admin: User = Depends(get_current_admin)):
+    central_auth.verify_otp(session, admin.email, "admin_confirm", payload.code.strip())
+    return _issue(admin)
 
 
 def require_admin_confirmed(admin: User = Depends(get_current_admin), x_admin_confirm: str = Header(default="")) -> User:
