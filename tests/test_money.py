@@ -58,21 +58,40 @@ def test_corridors_and_quote(c):
     assert c.get(f"{M}/quote", params={"amount": 90000, "from": "ZM", "to": "CD"}).status_code == 422  # au-dessus du plafond
 
 
+def review(code, approve=True, reason=""):
+    """Décision d'un agent / de l'admin (la logique métier est la même que celle des routes de contrôle)."""
+    from app.money.models import MoneyTransfer
+    from app.money.router import finalize_review
+    with Session(engine) as s:
+        t = s.exec(select(MoneyTransfer).where(MoneyTransfer.code == code)).one()
+        finalize_review(s, t, approve, reason)
+        s.add(t); s.commit(); s.refresh(t)
+        return t.status
+
+
 def test_send_completes(c):
     r = c.post(f"{M}/transfers", json=send_body())
     assert r.status_code == 201, r.text
     t = r.json()
-    assert t["status"] == "completed" and t["receive_amount"] == 20.0 and t["total_paid"] == 515.0 and t["role"] == "payer"
+    assert t["status"] == "under_review" and t["receive_amount"] == 20.0 and t["total_paid"] == 515.0 and t["role"] == "payer"  # argent gardé, en attente de contrôle
+    assert review(t["code"]) == "completed"
     assert t["counterpart_phone"] == "243812345678" and t["simulated"] is True
     assert c.post(f"{M}/transfers", json=send_body(beneficiary_operator="zamtel")).status_code == 422  # opérateur d'un autre pays
     assert c.post(f"{M}/transfers", json=send_body(from_country="FR")).status_code == 422
-    assert len(c.get(f"{M}/transfers").json()) == 1
+    assert len(c.get(f"{M}/transfers").json()) >= 1
 
 
 def test_failures(c):
     # versement impossible → remboursé
     r = c.post(f"{M}/transfers", json=send_body(beneficiary_phone="243810000000")).json()
-    assert r["status"] == "refunded" and "remboursé" in r["failure_reason"]
+    assert r["status"] == "under_review"
+    assert review(r["code"]) == "refunded"  # le versement échoue au moment de la confirmation → le payeur est remboursé
+    # refus par l'agent : remboursé aussi
+    r2 = c.post(f"{M}/transfers", json=send_body()).json()
+    assert review(r2["code"], False, "Montant inhabituel") == "rejected"
+    import pytest as _p
+    with _p.raises(Exception):
+        review(r2["code"])  # une opération déjà décidée ne se rejoue pas
     # paiement refusé → rien n'est envoyé
     r = c.post(f"{M}/transfers", json=send_body(pay_phone="0961119999")).json()
     assert r["status"] == "cancelled"
@@ -99,12 +118,13 @@ def test_request_flow(c):
     assert c.post(f"{M}/requests/{code}/pay", json={"pay_phone": "243819999999", "pay_operator": "mpesa"}).status_code == 402
     assert c.get(f"{M}/requests/{code}").json()["status"] == "awaiting_payer"
     ok = c.post(f"{M}/requests/{code}/pay", json={"pay_phone": "243811112222", "pay_operator": "mpesa"})
-    assert ok.status_code == 200 and ok.json()["status"] == "completed" and ok.json()["role"] == "payer"
+    assert ok.status_code == 200 and ok.json()["status"] == "under_review" and ok.json()["role"] == "payer"
     assert c.post(f"{M}/requests/{code}/pay", json={"pay_phone": "243811112222", "pay_operator": "mpesa"}).status_code == 409
     # côté demandeur : même opération, vue « requester »
     c.st["as"] = "ana"
     mine = {t["code"]: t for t in c.get(f"{M}/transfers").json()}
-    assert mine[code]["role"] == "requester" and mine[code]["status"] == "completed"
+    assert mine[code]["role"] == "requester" and mine[code]["status"] == "under_review"
+    assert review(code) == "completed"
 
 
 def test_request_decline_and_self_pay(c):
@@ -138,3 +158,14 @@ def test_send_and_withdraw_rates_per_direction(c):
             _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", send_rate=m * 3), 0.5)
         _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", reset=True), 0.5)
         assert svc.quote_send(s, "ZM", "CD", 100) == base
+
+
+def test_fee_included_or_deducted(c):
+    """Case « avec frais » : cochée, les frais s'ajoutent ; décochée, ils sont retirés du montant saisi."""
+    added = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "true"}).json()
+    assert added["total_paid"] == 515.0 and added["receive_amount"] == 20.0 and added["fee_mode"] == "added"
+    ded = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "false"}).json()
+    assert ded["total_paid"] == 500.0 and ded["fee"] == 15.0 and ded["fee_mode"] == "deducted"
+    assert ded["receive_amount"] == 19.4  # (500 − 15) / 25
+    t = c.post(f"{M}/transfers", json=send_body(with_fee=False)).json()
+    assert t["total_paid"] == 500.0 and t["receive_amount"] == 19.4

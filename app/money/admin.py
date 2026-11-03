@@ -14,7 +14,7 @@ from app.deps import get_current_user
 from app.models import User
 from app.money import services as svc
 from app.money.models import MoneyAgent, MoneyAudit, MoneyRate, MoneyTransfer
-from app.money.router import _read
+from app.money.router import _read, finalize_review
 
 admin_router = APIRouter(prefix="/api/v1/money/admin", tags=["money-admin"])
 agent_router = APIRouter(prefix="/api/v1/money/agent", tags=["money-agent"])
@@ -47,7 +47,7 @@ def overview(days: int = Query(default=30, ge=1, le=365), session: Session = Dep
     by_status: dict[str, int] = {}
     for t in rows:
         by_status[t.status] = by_status.get(t.status, 0) + 1
-    return {"days": days, "total": len(rows), "completed": len(done), "by_status": by_status, "flagged": sum(1 for t in rows if t.flagged),
+    return {"days": days, "total": len(rows), "completed": len(done), "by_status": by_status, "under_review": sum(1 for t in rows if t.status == "under_review"), "flagged": sum(1 for t in rows if t.flagged),
             "volume_usd": round(sum(c["volume_usd"] for c in corridors.values()), 2), "fees_usd": round(sum(c["fees_usd"] for c in corridors.values()), 2),
             "corridors": corridors, "simulated": all(t.provider == "simulated" for t in rows) if rows else True}
 
@@ -260,3 +260,38 @@ def agent_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(
     if not ({payload.from_country.upper(), payload.to_country.upper()} & mine):
         raise HTTPException(status_code=403, detail="Ce sens ne touche pas votre pays.")
     return _apply_corridor_rate(session, user, payload, max_dev=0.25)
+
+
+# --- Contrôle et confirmation des opérations (« under_review ») ----------------------
+
+class ReviewDecision(BaseModel):
+    approve: bool
+    reason: str = Field(default="", max_length=300)
+
+
+def _decide(session: Session, actor: User, code: str, payload: ReviewDecision, scope: Optional[set]) -> dict:
+    t = session.exec(select(MoneyTransfer).where(MoneyTransfer.code == code.upper())).first()
+    if not t or (scope is not None and not ({t.from_country, t.to_country} & scope)):
+        raise HTTPException(status_code=404, detail="Transaction introuvable dans votre périmètre.")
+    if not payload.approve and not payload.reason.strip():
+        raise HTTPException(status_code=422, detail="Indiquez le motif du refus.")
+    finalize_review(session, t, payload.approve, payload.reason.strip())
+    t.review_note = payload.reason.strip() or t.review_note
+    t.updated_at = datetime.utcnow()
+    session.add(t)
+    audit(session, actor, "tx_confirmed" if payload.approve else "tx_rejected", t.code, f"{t.status} {payload.reason}")
+    session.commit()
+    return {**_tx_admin(t)}
+
+
+@admin_router.post("/transactions/{code}/review")
+def admin_review(code: str, payload: ReviewDecision, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    return _decide(session, admin, code, payload, None)
+
+
+@agent_router.post("/transactions/{code}/review")
+def agent_review(code: str, payload: ReviewDecision, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    mine = {a.country for a in _agent_rows(session, user) if a.can_review}
+    if not mine:
+        raise HTTPException(status_code=403, detail="Vous n'avez pas le droit de contrôler les transactions.")
+    return _decide(session, user, code, payload, mine)

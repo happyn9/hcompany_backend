@@ -29,7 +29,7 @@ class MoneyTransfer(SQLModel, table=True):
     pay_phone: str = ""
     pay_operator: str = ""
     note: str = ""
-    status: str = Field(default="created", index=True)  # created | awaiting_payer | collected | completed | refunded | declined | cancelled | expired
+    status: str = Field(default="created", index=True)  # created | awaiting_payer | under_review | completed | refunded | rejected | declined | cancelled | expired
     provider: str = "simulated"
     provider_ref: str = ""
     failure_reason: str = ""

@@ -41,15 +41,16 @@ def corridors(session: Session = Depends(get_session)):
 @router.get("/quote")
 def quote(amount: float = Query(gt=0, le=10_000_000), source: str = Query(alias="from", min_length=2, max_length=2),
           target: str = Query(alias="to", min_length=2, max_length=2), mode: str = Query(default="send", pattern="^(send|receive)$"),
-          session: Session = Depends(get_session)):
+          with_fee: bool = True, session: Session = Depends(get_session)):
     """mode=send : le payeur envoie `amount`. mode=receive : le bénéficiaire doit recevoir `amount`."""
-    return svc.quote_send(session, source, target, amount) if mode == "send" else svc.quote_receive(session, source, target, amount)
+    return svc.quote_send(session, source, target, amount, with_fee) if mode == "send" else svc.quote_receive(session, source, target, amount)
 
 
 class SendIn(BaseModel):
     to_country: str = Field(min_length=2, max_length=2)
     from_country: str = Field(min_length=2, max_length=2)
     amount: float = Field(gt=0, le=10_000_000)
+    with_fee: bool = True  # True : les frais s'ajoutent au montant ; False : ils sont retirés du montant saisi
     beneficiary_name: str = Field(min_length=2, max_length=120)
     beneficiary_phone: str = Field(min_length=6, max_length=24)
     beneficiary_operator: str
@@ -59,26 +60,38 @@ class SendIn(BaseModel):
 
 
 def _run_payment(session: Session, t: MoneyTransfer, payer_country: str) -> None:
-    """Encaisse chez le payeur, puis verse chez le bénéficiaire ; remboursement si le versement échoue."""
+    """Encaisse chez le payeur et GARDE l'argent : le versement n'a lieu qu'après contrôle d'un agent ou de l'admin (statut « under_review »)."""
     prov = get_provider()
     c = prov.collect(country=payer_country, currency=t.send_currency, amount=t.total_paid, phone=t.pay_phone, operator=t.pay_operator, reference=t.code)
     if not c.ok:
         t.status, t.failure_reason = "cancelled", c.reason
         return
-    t.status, t.provider_ref = "collected", c.ref
-    p = prov.payout(country=t.to_country, currency=t.receive_currency, amount=t.receive_amount, phone=t.counterpart_phone, operator=t.counterpart_operator, reference=t.code)
-    if p.ok:
-        t.status = "completed"
-    else:
-        prov.refund(ref=c.ref, amount=t.total_paid)
-        t.status, t.failure_reason = "refunded", p.reason + " Vous avez été remboursé."
+    t.status, t.provider_ref = "under_review", c.ref
+    t.review_note = ""
+
+
+def finalize_review(session: Session, t: MoneyTransfer, approve: bool, reason: str = "") -> None:
+    """Décision d'un agent / de l'admin sur une opération « under_review » : verser le bénéficiaire, ou rembourser le payeur."""
+    if t.status != "under_review":
+        raise HTTPException(status_code=409, detail="Cette opération n'est pas en attente de contrôle.")
+    prov = get_provider()
+    if approve:
+        p = prov.payout(country=t.to_country, currency=t.receive_currency, amount=t.receive_amount, phone=t.counterpart_phone, operator=t.counterpart_operator, reference=t.code)
+        if p.ok:
+            t.status = "completed"
+            return
+        prov.refund(ref=t.provider_ref, amount=t.total_paid)
+        t.status, t.failure_reason = "refunded", p.reason + " Le payeur a été remboursé."
+        return
+    prov.refund(ref=t.provider_ref, amount=t.total_paid)
+    t.status, t.failure_reason = "rejected", (reason or "Refusée après contrôle.") + " Le payeur a été remboursé."
 
 
 @router.post("/transfers", status_code=201)
 def send(payload: SendIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     _require_verified(user)
     frm, to = payload.from_country.upper(), payload.to_country.upper()
-    q = svc.quote_send(session, frm, to, payload.amount)
+    q = svc.quote_send(session, frm, to, payload.amount, payload.with_fee)
     svc.check_operator(frm, payload.pay_operator)
     svc.check_operator(to, payload.beneficiary_operator)
     svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))

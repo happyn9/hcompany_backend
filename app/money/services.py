@@ -88,11 +88,19 @@ def corridor_rates(session: Session) -> dict:
     return out
 
 
-def quote_send(session: Session, frm: str, to: str, amount: float) -> dict:
-    """Le payeur envoie `amount` (dans sa devise) ; le bénéficiaire reçoit le montant converti, la marge de change en moins."""
+def quote_send(session: Session, frm: str, to: str, amount: float, with_fee: bool = True) -> dict:
+    """Le payeur saisit `amount` (dans sa devise).
+    with_fee=True : les frais s'ajoutent (il paie amount + frais, le bénéficiaire reçoit la conversion de `amount`).
+    with_fee=False : les frais sont retirés de `amount` (il paie exactement `amount`, le bénéficiaire reçoit la conversion de amount − frais)."""
     check_corridor(frm, to)
     cur_from, cur_to = _currency(session, frm), _currency(session, to)
     _check_limits(session, amount, cur_from)
+    fee = _fee(session, amount, cur_from)
+    entered = amount
+    if not with_fee:
+        amount = round(amount - fee, 2)
+        if amount <= 0:
+            raise HTTPException(status_code=422, detail="Le montant est trop petit pour couvrir les frais.")
     custom = override_rate(session, frm, to, "send") if cur_from != cur_to else None
     if custom:  # taux d'envoi fixé par l'admin / l'agent : arrondi vers le bas, le bénéficiaire ne reçoit jamais plus que calculé
         receive = math.floor(amount * custom * 100) / 100
@@ -102,10 +110,9 @@ def quote_send(session: Session, frm: str, to: str, amount: float) -> dict:
         receive = geo.round_nice(raw * (1 - margin / 100), cur_to) if cur_from != cur_to else amount
     if cur_to == "CDF":
         receive = float(math.floor(receive / 50) * 50)  # jamais plus que ce qui est calculé
-    fee = _fee(session, amount, cur_from)
     return {"from_country": frm.upper(), "to_country": to.upper(), "send_currency": cur_from, "send_amount": round(amount, 2), "fee": fee,
-            "total_paid": round(amount + fee, 2), "receive_currency": cur_to, "receive_amount": receive,
-            "rate": round(receive / amount, 6) if amount else 0}
+            "total_paid": round(amount + fee, 2) if with_fee else round(entered, 2), "fee_mode": "added" if with_fee else "deducted",
+            "receive_currency": cur_to, "receive_amount": receive, "rate": round(receive / amount, 6) if amount else 0}
 
 
 def quote_receive(session: Session, payer_country: str, receiver_country: str, receive_amount: float) -> dict:
@@ -132,7 +139,7 @@ def quote_receive(session: Session, payer_country: str, receiver_country: str, r
 def check_daily(session: Session, user_id: int, amount_usd: float) -> None:
     since = datetime.utcnow() - timedelta(days=1)
     rows = session.exec(select(MoneyTransfer).where(MoneyTransfer.payer_user_id == user_id, MoneyTransfer.created_at >= since,
-                                                    MoneyTransfer.status.in_(["collected", "completed"]))).all()
+                                                    MoneyTransfer.status.in_(["collected", "under_review", "completed"]))).all()
     spent = sum(_usd(session, r.send_amount, r.send_currency) for r in rows)
     if spent + amount_usd > DAILY_MAX_USD:
         raise HTTPException(status_code=429, detail="Plafond journalier atteint. Réessayez demain.")

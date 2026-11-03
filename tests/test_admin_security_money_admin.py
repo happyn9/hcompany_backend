@@ -109,3 +109,34 @@ def test_admin_confirm_by_email_code(c, monkeypatch):
     c.st["as"] = "client"
     assert c.post("/api/v1/admin-security/otp").status_code == 403  # un non-admin ne peut pas demander de code
     c.st["as"] = "boss"
+
+
+def _tx(code, frm="ZM", to="CD"):
+    from app.money.models import MoneyTransfer
+    with Session(engine) as s:
+        s.add(MoneyTransfer(code=code, kind="send", user_id=1, payer_user_id=1, from_country=frm, to_country=to, send_currency="ZMW", send_amount=500,
+                            fee=15, total_paid=515, receive_currency="USD", receive_amount=20, rate=0.04, counterpart_name="Jean",
+                            counterpart_phone="243812345678", counterpart_operator="mpesa", status="under_review", provider_ref="SIM-IN-X"))
+        s.commit()
+
+
+def test_review_confirm_and_reject_by_admin_and_agent(c):
+    tok = c.post("/api/v1/admin-security/confirm", json={"password": "motdepasse1"}).json()["confirm_token"]
+    c.headers["X-Admin-Confirm"] = tok
+    _tx("HM-REV00001"); _tx("HM-REV00002"); _tx("HM-REV00003", "CD", "ZM")
+    c.st["as"] = "boss"
+    assert c.post(f"{A}/transactions/HM-REV00001/review", json={"approve": False}).status_code == 422  # motif obligatoire
+    r = c.post(f"{A}/transactions/HM-REV00001/review", json={"approve": False, "reason": "Doute sur l'identité"})
+    assert r.status_code == 200 and r.json()["status"] == "rejected"
+    r = c.post(f"{A}/transactions/HM-REV00002/review", json={"approve": True})
+    assert r.status_code == 200 and r.json()["status"] == "completed"
+    assert c.post(f"{A}/transactions/HM-REV00002/review", json={"approve": True}).status_code == 409  # déjà décidée
+    # agent du Congo : peut décider une opération qui touche le Congo
+    c.post(f"{A}/agents", json={"email": "agent@adm.example.com", "country": "ZM", "can_review": True})
+    c.st["as"] = "agent"
+    assert c.post(f"{G}/transactions/HM-REV00003/review", json={"approve": True}).json()["status"] == "completed"
+    _tx("HM-REV00004", "FR", "BE")  # hors périmètre de l'agent (ZM)
+    assert c.post(f"{G}/transactions/HM-REV00004/review", json={"approve": True}).status_code == 404
+    c.st["as"] = "client"
+    assert c.post(f"{G}/transactions/HM-REV00004/review", json={"approve": True}).status_code == 403
+    c.st["as"] = "boss"
