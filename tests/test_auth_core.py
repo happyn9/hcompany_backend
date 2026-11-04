@@ -47,6 +47,10 @@ def test_register_login_refresh_and_me(client):
     assert body["refresh_token"] and body["user"]["email"] == "ana@example.com"
     me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
     assert me.status_code == 200 and me.json()["email"] == "ana@example.com"
+    hdr = {"Authorization": f"Bearer {body['access_token']}"}
+    up = client.patch("/api/v1/auth/me", json={"full_name": "  Ana   Maria "}, headers=hdr)
+    assert up.status_code == 200 and up.json()["full_name"] == "Ana Maria"
+    assert client.patch("/api/v1/auth/me", json={"full_name": "A"}, headers=hdr).status_code == 422
     rf = client.post("/api/v1/auth/refresh", json={"refresh_token": body["refresh_token"]}, headers={"x-client-type": "mobile"})
     assert rf.status_code == 200
     # un jeton d'accès n'est pas un jeton de rafraîchissement (le cookie posé à la connexion est retiré)

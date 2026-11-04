@@ -33,8 +33,9 @@ def _require_verified(user: User) -> None:
 @router.get("/corridors")
 def corridors(session: Session = Depends(get_session)):
     geo.ensure_seed(session)
+    cfg = svc.get_settings(session)
     return {"countries": ["ZM", "CD"], "operators": {k: [{"key": a, "label": b} for a, b in v.items()] for k, v in svc.OPERATORS.items()},
-            "limits_usd": {"min": svc.MIN_USD, "max": svc.MAX_USD, "daily": svc.DAILY_MAX_USD}, "fee_pct": svc.FEE_PCT,
+            "limits_usd": {"min": cfg["min_usd"], "max": cfg["max_usd"], "daily": cfg["daily_max_usd"]}, "fee_pct": cfg["fee_pct"], "min_fee_usd": cfg["min_fee_usd"], "dial_codes": svc.DIAL,
             "currencies": {c: svc._currency(session, c) for c in ("ZM", "CD")}, "rates": svc.corridor_rates(session), "simulated": get_provider().simulated}
 
 
@@ -98,8 +99,8 @@ def send(payload: SendIn, session: Session = Depends(get_session), user: User = 
     t = MoneyTransfer(code=svc.new_code(), kind="send", user_id=user.id, payer_user_id=user.id, from_country=frm, to_country=to,
                       send_currency=q["send_currency"], send_amount=q["send_amount"], fee=q["fee"], total_paid=q["total_paid"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"], rate=q["rate"],
-                      counterpart_name=payload.beneficiary_name.strip(), counterpart_phone=geo.clean_phone(payload.beneficiary_phone),
-                      counterpart_operator=payload.beneficiary_operator, pay_phone=geo.clean_phone(payload.pay_phone),
+                      counterpart_name=payload.beneficiary_name.strip(), counterpart_phone=svc.normalize_phone(payload.beneficiary_phone, to),
+                      counterpart_operator=payload.beneficiary_operator, pay_phone=svc.normalize_phone(payload.pay_phone, frm),
                       pay_operator=payload.pay_operator, note=payload.note.strip(), provider=get_provider().name)
     _run_payment(session, t, frm)
     t.updated_at = datetime.utcnow()
@@ -126,11 +127,11 @@ def request_money(payload: RequestIn, session: Session = Depends(get_session), u
     svc.check_operator(rc, payload.receive_operator)
     t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"],
-                      counterpart_name=payload.payer_name.strip(), counterpart_phone=geo.clean_phone(payload.payer_phone) if payload.payer_phone else "",
+                      counterpart_name=payload.payer_name.strip(), counterpart_phone=svc.normalize_phone(payload.payer_phone, pc) if payload.payer_phone else "",
                       # le numéro de réception du demandeur est conservé dans pay_phone/pay_operator côté « receveur »
                       pay_phone="", pay_operator="", note=payload.note.strip(), status="awaiting_payer", provider=get_provider().name,
                       expires_at=datetime.utcnow() + timedelta(days=svc.REQUEST_TTL_DAYS))
-    t.provider_ref = f"{geo.clean_phone(payload.receive_phone)}|{payload.receive_operator}"  # destination du versement, jusqu'au paiement
+    t.provider_ref = f"{svc.normalize_phone(payload.receive_phone, rc)}|{payload.receive_operator}"  # destination du versement, jusqu'au paiement
     session.add(t); session.commit(); session.refresh(t)
     return _read(t, user.id)
 
@@ -171,7 +172,7 @@ def pay_request(code: str, payload: PayIn, session: Session = Depends(get_sessio
     svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
     dest_phone, dest_op = t.provider_ref.split("|", 1)
     t.payer_user_id, t.send_amount, t.fee, t.total_paid, t.rate = user.id, q["send_amount"], q["fee"], q["total_paid"], q["rate"]
-    t.pay_phone, t.pay_operator = geo.clean_phone(payload.pay_phone), payload.pay_operator
+    t.pay_phone, t.pay_operator = svc.normalize_phone(payload.pay_phone, t.from_country), payload.pay_operator
     t.counterpart_phone, t.counterpart_operator = dest_phone, dest_op  # versement vers le demandeur
     _run_payment(session, t, t.from_country)
     if t.status == "cancelled":  # paiement refusé : la demande reste ouverte pour un nouvel essai

@@ -71,3 +71,15 @@ class MoneyRate(SQLModel, table=True):
     withdraw_rate: Optional[float] = None
     updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MoneySettings(SQLModel, table=True):
+    """Frais et plafonds H-Money (ligne unique id=1), réglés par l'admin. Montants en USD. Absente = valeurs par défaut du code."""
+    id: int = Field(default=1, primary_key=True)
+    fee_pct: float = 3.0
+    min_fee_usd: float = 0.5
+    min_usd: float = 2.0
+    max_usd: float = 1000.0
+    daily_max_usd: float = 2000.0
+    updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

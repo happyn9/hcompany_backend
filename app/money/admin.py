@@ -13,7 +13,7 @@ from app.database import get_session
 from app.deps import get_current_user
 from app.models import User
 from app.money import services as svc
-from app.money.models import MoneyAgent, MoneyAudit, MoneyRate, MoneyTransfer
+from app.money.models import MoneyAgent, MoneyAudit, MoneyRate, MoneySettings, MoneyTransfer
 from app.money.router import _read, finalize_review
 
 admin_router = APIRouter(prefix="/api/v1/money/admin", tags=["money-admin"])
@@ -242,6 +242,36 @@ def admin_corridor_rates(session: Session = Depends(get_session), admin: User = 
 @admin_router.put("/corridor-rates")
 def admin_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
     return _apply_corridor_rate(session, admin, payload, max_dev=0.5)
+
+
+class SettingsIn(BaseModel):
+    fee_pct: float = Field(ge=0, le=20)
+    min_fee_usd: float = Field(ge=0, le=50)
+    min_usd: float = Field(ge=0.5, le=1000)
+    max_usd: float = Field(ge=1, le=100000)
+    daily_max_usd: float = Field(ge=1, le=1000000)
+
+
+@admin_router.get("/settings")
+def admin_get_settings(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    return svc.get_settings(session)
+
+
+@admin_router.put("/settings")
+def admin_set_settings(payload: SettingsIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    if payload.min_usd >= payload.max_usd:
+        raise HTTPException(status_code=422, detail="Le minimum doit être inférieur au maximum par opération.")
+    if payload.max_usd > payload.daily_max_usd:
+        raise HTTPException(status_code=422, detail="Le plafond journalier doit couvrir au moins une opération maximale.")
+    old = svc.get_settings(session)
+    row = session.get(MoneySettings, 1) or MoneySettings(id=1)
+    for k, v in payload.model_dump().items():
+        setattr(row, k, v)
+    row.updated_by, row.updated_at = admin.id, datetime.utcnow()
+    session.add(row)
+    audit(session, admin, "settings", "frais_plafonds", f"{old} → {payload.model_dump()}")
+    session.commit()
+    return svc.get_settings(session)
 
 
 @agent_router.get("/corridor-rates")

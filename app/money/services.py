@@ -7,7 +7,7 @@ from sqlmodel import Session, func, select
 
 from app.crossborder import services as geo
 from app.crossborder.models import Country
-from app.money.models import MoneyRate, MoneyTransfer
+from app.money.models import MoneyRate, MoneySettings, MoneyTransfer
 
 # Valeurs de départ À VALIDER (frais, plafonds) — exprimées en USD.
 FEE_PCT = 3.0
@@ -21,6 +21,35 @@ OPERATORS = {
     "ZM": {"mtn": "MTN MoMo", "airtel": "Airtel Money", "zamtel": "Zamtel Kwacha"},
     "CD": {"mpesa": "M-Pesa", "airtel": "Airtel Money", "orange": "Orange Money", "africell": "Africell Money"},
 }
+
+
+DIAL = {"ZM": "260", "CD": "243"}
+
+
+def normalize_phone(raw: str, country: str) -> str:
+    """Numéro mobile du pays `country` au format international sans « + » (ex. 260961112233).
+    Accepte : +260 96 111 2233, 00260…, 260961112233, 0961112233, 961112233. Refuse l'indicatif d'un autre pays."""
+    country = country.upper()
+    dial = DIAL[country]
+    raw = (raw or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    intl = raw.startswith("+") or digits.startswith("00")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    other = next(d for k, d in DIAL.items() if k != country)
+    if intl or (len(digits) == 12 and digits.startswith((dial, other))):
+        if digits.startswith(other):
+            raise HTTPException(status_code=422, detail=f"Ce numéro a l'indicatif +{other} : un numéro {country} commence par +{dial}.")
+        if not digits.startswith(dial):
+            raise HTTPException(status_code=422, detail=f"Indicatif non pris en charge : un numéro {country} commence par +{dial}.")
+        national = digits[len(dial):]
+    elif digits.startswith("0"):
+        national = digits[1:]
+    else:
+        national = digits
+    if len(national) != 9 or national[0] == "0":
+        raise HTTPException(status_code=422, detail=f"Numéro invalide : +{dial} suivi de 9 chiffres attendu.")
+    return dial + national
 
 
 def new_code() -> str:
@@ -50,17 +79,26 @@ def _currency(session: Session, country: str) -> str:
     return c.currency
 
 
+def get_settings(session: Session) -> dict:
+    """Frais et plafonds en vigueur : ligne réglée dans l'admin, sinon valeurs par défaut."""
+    r = session.get(MoneySettings, 1)
+    if r is None:
+        return {"fee_pct": FEE_PCT, "min_fee_usd": MIN_FEE_USD, "min_usd": MIN_USD, "max_usd": MAX_USD, "daily_max_usd": DAILY_MAX_USD}
+    return {"fee_pct": r.fee_pct, "min_fee_usd": r.min_fee_usd, "min_usd": r.min_usd, "max_usd": r.max_usd, "daily_max_usd": r.daily_max_usd}
+
+
 def _fee(session: Session, amount: float, currency: str) -> float:
-    min_fee = geo.convert(session, MIN_FEE_USD, "USD", currency, with_margin=False)
-    return geo.round_nice(max(amount * FEE_PCT / 100, min_fee), currency)
+    cfg = get_settings(session)
+    min_fee = geo.convert(session, cfg["min_fee_usd"], "USD", currency, with_margin=False)
+    return geo.round_nice(max(amount * cfg["fee_pct"] / 100, min_fee), currency)
 
 
 def _check_limits(session: Session, amount: float, currency: str) -> None:
-    usd = _usd(session, amount, currency)
-    if usd < MIN_USD:
-        raise HTTPException(status_code=422, detail=f"Montant minimum : l'équivalent de {MIN_USD:g} USD.")
-    if usd > MAX_USD:
-        raise HTTPException(status_code=422, detail=f"Montant maximum par opération : l'équivalent de {MAX_USD:g} USD.")
+    usd, cfg = _usd(session, amount, currency), get_settings(session)
+    if usd < cfg["min_usd"]:
+        raise HTTPException(status_code=422, detail=f"Montant minimum : l'équivalent de {cfg['min_usd']:g} USD.")
+    if usd > cfg["max_usd"]:
+        raise HTTPException(status_code=422, detail=f"Montant maximum par opération : l'équivalent de {cfg['max_usd']:g} USD.")
 
 
 def market_rate(session: Session, frm: str, to: str) -> float:
@@ -141,7 +179,7 @@ def check_daily(session: Session, user_id: int, amount_usd: float) -> None:
     rows = session.exec(select(MoneyTransfer).where(MoneyTransfer.payer_user_id == user_id, MoneyTransfer.created_at >= since,
                                                     MoneyTransfer.status.in_(["collected", "under_review", "completed"]))).all()
     spent = sum(_usd(session, r.send_amount, r.send_currency) for r in rows)
-    if spent + amount_usd > DAILY_MAX_USD:
+    if spent + amount_usd > get_settings(session)["daily_max_usd"]:
         raise HTTPException(status_code=429, detail="Plafond journalier atteint. Réessayez demain.")
 
 

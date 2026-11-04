@@ -154,6 +154,23 @@ def me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+class ProfileUpdate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=80)
+
+
+@router.patch("/me", response_model=UserRead)
+def update_me(payload: ProfileUpdate, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    """Le nom affiché (menu profil, e-mails, reçus) est modifiable par la personne elle-même."""
+    name = " ".join(payload.full_name.split())
+    if len(name) < 2:
+        raise HTTPException(status_code=422, detail="Nom trop court.")
+    current_user.full_name = name
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    return current_user
+
+
 # --- OTP (e-mail uniquement pour l'instant) ---
 
 @router.get("/warmup", status_code=status.HTTP_202_ACCEPTED)

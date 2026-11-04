@@ -140,3 +140,25 @@ def test_review_confirm_and_reject_by_admin_and_agent(c):
     c.st["as"] = "client"
     assert c.post(f"{G}/transactions/HM-REV00004/review", json={"approve": True}).status_code == 403
     c.st["as"] = "boss"
+
+
+def test_fee_and_limits_settings(c):
+    c.st["as"] = "boss"
+    tok = c.post("/api/v1/admin-security/confirm", json={"password": "motdepasse1"}).json()["confirm_token"]
+    c.headers["X-Admin-Confirm"] = tok
+    assert c.get(f"{A}/settings").json()["fee_pct"] == 3.0
+    body = {"fee_pct": 5, "min_fee_usd": 0.1, "min_usd": 3, "max_usd": 500, "daily_max_usd": 900}
+    assert c.put(f"{A}/settings", json={**body, "max_usd": 2}).status_code == 422       # min ≥ max
+    assert c.put(f"{A}/settings", json={**body, "fee_pct": 90}).status_code == 422      # hors bornes
+    assert c.put(f"{A}/settings", json={**body, "daily_max_usd": 100}).status_code == 422
+    assert c.put(f"{A}/settings", json=body).status_code == 200
+    cor = c.get("/api/v1/money/corridors").json()
+    assert cor["fee_pct"] == 5 and cor["limits_usd"] == {"min": 3, "max": 500, "daily": 900}
+    q = c.get("/api/v1/money/quote", params={"amount": 100, "from": "ZM", "to": "CD"}).json()
+    assert q["fee"] == 5.0                                                              # 5 % appliqué
+    assert c.get("/api/v1/money/quote", params={"amount": 1, "from": "ZM", "to": "CD"}).status_code == 422  # sous le nouveau minimum
+    assert any(a["action"] == "settings" for a in c.get(f"{A}/audit").json())
+    c.st["as"] = "client"
+    assert c.put(f"{A}/settings", json=body).status_code == 403
+    c.st["as"] = "boss"
+    c.put(f"{A}/settings", json={"fee_pct": 3, "min_fee_usd": 0.5, "min_usd": 2, "max_usd": 1000, "daily_max_usd": 2000})

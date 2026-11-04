@@ -169,3 +169,26 @@ def test_fee_included_or_deducted(c):
     assert ded["receive_amount"] == 19.4  # (500 − 15) / 25
     t = c.post(f"{M}/transfers", json=send_body(with_fee=False)).json()
     assert t["total_paid"] == 500.0 and t["receive_amount"] == 19.4
+
+
+def test_phone_indicators(c):
+    from fastapi import HTTPException
+    from app.money import services as svc
+    n = svc.normalize_phone
+    for raw in ("0961112233", "961112233", "+260 96 111 2233", "00260961112233", "260961112233"):
+        assert n(raw, "ZM") == "260961112233"
+    assert n("+243 81 234 5678", "CD") == "243812345678" and n("0812345678", "CD") == "243812345678"
+    for raw, country in (("+243812345678", "ZM"), ("260961112233", "CD"), ("+33612345678", "ZM"), ("12345", "ZM")):
+        with pytest.raises(HTTPException):
+            n(raw, country)
+    # via l'API : un numéro congolais pour un bénéficiaire zambien est refusé
+    assert c.post(f"{M}/transfers", json=send_body(from_country="CD", to_country="ZM", beneficiary_operator="mtn", beneficiary_phone="+243812345678",
+                                                   pay_operator="mpesa", pay_phone="0812345678", amount=20000)).status_code == 422
+
+
+def test_fee_deducted_shows_beneficiary_less(c):
+    """Décochée : le payeur paie exactement le montant saisi ; frais retirés ; le bénéficiaire reçoit moins que case cochée."""
+    on = c.get(f"{M}/quote", params={"amount": 300, "from": "ZM", "to": "CD", "with_fee": "true"}).json()
+    off = c.get(f"{M}/quote", params={"amount": 300, "from": "ZM", "to": "CD", "with_fee": "false"}).json()
+    assert off["total_paid"] == 300 and off["send_amount"] == round(300 - off["fee"], 2)
+    assert on["total_paid"] == round(300 + on["fee"], 2) and on["send_amount"] == 300 and off["receive_amount"] < on["receive_amount"]
