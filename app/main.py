@@ -35,6 +35,7 @@ from app.partnerhub import routers as partnerhub
 from app.money import router as money_router, admin as money_admin
 from app import admin_security
 from app.promos import router as promos_router
+from app.knowledge import router as knowledge_router
 from app.lodging.routers import admin as lodging_admin, catalog as lodging_catalog, guest as lodging_guest, host as lodging_host
 from app.services.rate_limit import limiter
 
@@ -248,6 +249,8 @@ app.include_router(restaurant_owner.router)
 app.include_router(restaurant_admin.router)
 app.include_router(admin_security.router)
 app.include_router(promos_router.router)
+app.include_router(knowledge_router.router)
+app.include_router(knowledge_router.admin)
 app.include_router(money_router.router)
 app.include_router(money_admin.admin_router)
 app.include_router(money_admin.agent_router)

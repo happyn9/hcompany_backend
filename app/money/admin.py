@@ -13,7 +13,10 @@ from app.database import get_session
 from app.deps import get_current_user
 from app.models import User
 from app.money import services as svc
-from app.money.models import MoneyAgent, MoneyAudit, MoneyRate, MoneySettings, MoneyTransfer
+import json
+
+from app.money import pricing as P
+from app.money.models import MoneyAgent, MoneyAudit, MoneyOperatorFee, MoneyRate, MoneySettings, MoneyTransfer
 from app.money.router import _read, finalize_review
 
 admin_router = APIRouter(prefix="/api/v1/money/admin", tags=["money-admin"])
@@ -38,17 +41,19 @@ def overview(days: int = Query(default=30, ge=1, le=365), session: Session = Dep
     corridors: dict[str, dict] = {}
     for t in done:
         k = f"{t.from_country}→{t.to_country}"
-        c = corridors.setdefault(k, {"count": 0, "volume_usd": 0.0, "fees_usd": 0.0})
+        c = corridors.setdefault(k, {"count": 0, "volume_usd": 0.0, "fees_usd": 0.0, "cost_usd": 0.0})
         c["count"] += 1
         c["volume_usd"] += svc.usd_of(session, t.send_amount, t.send_currency)
         c["fees_usd"] += svc.usd_of(session, t.fee, t.send_currency)
+        c["cost_usd"] += svc.usd_of(session, t.provider_cost, t.send_currency)
     for c in corridors.values():
-        c["volume_usd"], c["fees_usd"] = round(c["volume_usd"], 2), round(c["fees_usd"], 2)
+        c["volume_usd"], c["fees_usd"], c["cost_usd"] = round(c["volume_usd"], 2), round(c["fees_usd"], 2), round(c["cost_usd"], 2)
+        c["net_usd"] = round(c["fees_usd"] - c["cost_usd"], 2)
     by_status: dict[str, int] = {}
     for t in rows:
         by_status[t.status] = by_status.get(t.status, 0) + 1
     return {"days": days, "total": len(rows), "completed": len(done), "by_status": by_status, "under_review": sum(1 for t in rows if t.status == "under_review"), "flagged": sum(1 for t in rows if t.flagged),
-            "volume_usd": round(sum(c["volume_usd"] for c in corridors.values()), 2), "fees_usd": round(sum(c["fees_usd"] for c in corridors.values()), 2),
+            "volume_usd": round(sum(c["volume_usd"] for c in corridors.values()), 2), "fees_usd": round(sum(c["fees_usd"] for c in corridors.values()), 2), "cost_usd": round(sum(c["cost_usd"] for c in corridors.values()), 2), "net_usd": round(sum(c["net_usd"] for c in corridors.values()), 2),
             "corridors": corridors, "simulated": all(t.provider == "simulated" for t in rows) if rows else True}
 
 
@@ -246,6 +251,7 @@ def admin_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(
 
 class SettingsIn(BaseModel):
     fee_pct: float = Field(ge=0, le=20)
+    target_margin_pct: float = Field(default=1.0, ge=0, le=20)
     min_fee_usd: float = Field(ge=0, le=50)
     min_usd: float = Field(ge=0.5, le=1000)
     max_usd: float = Field(ge=1, le=100000)
@@ -272,6 +278,44 @@ def admin_set_settings(payload: SettingsIn, session: Session = Depends(get_sessi
     audit(session, admin, "settings", "frais_plafonds", f"{old} → {payload.model_dump()}")
     session.commit()
     return svc.get_settings(session)
+
+
+class OperatorFeeIn(BaseModel):
+    country: str = Field(min_length=2, max_length=2)
+    operator: str
+    direction: str = Field(pattern="^(in|out)$")
+    enabled: bool = True
+    pct: float = Field(ge=0, le=20)
+    tiers: list[list[Optional[float]]] = []  # [[borne_exclusive | null, fixe]]
+    confirmed: bool = True
+    note: str = Field(default="", max_length=200)
+
+
+@admin_router.get("/operators")
+def admin_operators(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    """Grille de coûts de l'agrégateur par opérateur et sens, + simulation de marge sur un envoi type."""
+    out = []
+    for f in sorted(P.all_fees(session).values(), key=lambda x: (x.country, x.direction, x.operator)):
+        out.append({"country": f.country, "operator": f.operator, "label": svc.OPERATORS[f.country][f.operator], "direction": f.direction, "enabled": f.enabled,
+                    "pct": f.pct, "tiers": f.tiers, "confirmed": f.confirmed, "note": f.note, "code": P.PAWAPAY_CODES.get((f.country, f.operator))})
+    return out
+
+
+@admin_router.put("/operators")
+def admin_set_operator(payload: OperatorFeeIn, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    c = payload.country.upper()
+    if c not in svc.OPERATORS or payload.operator not in svc.OPERATORS[c]:
+        raise HTTPException(status_code=422, detail="Opérateur inconnu pour ce pays.")
+    for b, f in payload.tiers:
+        if f is None or f < 0 or (b is not None and b <= 0):
+            raise HTTPException(status_code=422, detail="Tranches invalides.")
+    row = session.get(MoneyOperatorFee, (c, payload.operator, payload.direction)) or MoneyOperatorFee(country=c, operator=payload.operator, direction=payload.direction)
+    row.enabled, row.pct, row.tiers_json, row.confirmed, row.note = payload.enabled, payload.pct, json.dumps(payload.tiers), payload.confirmed, payload.note
+    row.updated_by, row.updated_at = admin.id, datetime.utcnow()
+    session.add(row)
+    audit(session, admin, "operator_fee", f"{c}:{payload.operator}:{payload.direction}", f"actif={payload.enabled} pct={payload.pct} tranches={payload.tiers}")
+    session.commit()
+    return {"ok": True}
 
 
 @agent_router.get("/corridor-rates")

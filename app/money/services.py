@@ -7,10 +7,12 @@ from sqlmodel import Session, func, select
 
 from app.crossborder import services as geo
 from app.crossborder.models import Country
+from app.money import pricing as P
 from app.money.models import MoneyRate, MoneySettings, MoneyTransfer
 
 # Valeurs de départ À VALIDER (frais, plafonds) — exprimées en USD.
 FEE_PCT = 3.0
+TARGET_MARGIN_PCT = 1.0
 MIN_FEE_USD = 0.5
 MIN_USD = 2.0
 MAX_USD = 1000.0
@@ -62,9 +64,13 @@ def check_corridor(frm: str, to: str) -> None:
         raise HTTPException(status_code=422, detail="Pour l'instant : entre la Zambie et la RD Congo.")
 
 
-def check_operator(country: str, operator: str) -> None:
-    if operator not in OPERATORS[country.upper()]:
+def check_operator(session: Session, country: str, operator: str, direction: str) -> None:
+    """direction : « in » (le payeur paie avec cet opérateur) ou « out » (le bénéficiaire reçoit chez cet opérateur)."""
+    fee = P.get_fee(session, country, operator, direction) if country.upper() in OPERATORS else None
+    if fee is None or operator not in OPERATORS[country.upper()]:
         raise HTTPException(status_code=422, detail="Opérateur non pris en charge dans ce pays.")
+    if not fee.enabled:
+        raise HTTPException(status_code=422, detail=f"{OPERATORS[country.upper()][operator]} n'est pas disponible pour {'payer' if direction == 'in' else 'recevoir'} dans ce pays.")
 
 
 def _usd(session: Session, amount: float, currency: str) -> float:
@@ -83,8 +89,8 @@ def get_settings(session: Session) -> dict:
     """Frais et plafonds en vigueur : ligne réglée dans l'admin, sinon valeurs par défaut."""
     r = session.get(MoneySettings, 1)
     if r is None:
-        return {"fee_pct": FEE_PCT, "min_fee_usd": MIN_FEE_USD, "min_usd": MIN_USD, "max_usd": MAX_USD, "daily_max_usd": DAILY_MAX_USD}
-    return {"fee_pct": r.fee_pct, "min_fee_usd": r.min_fee_usd, "min_usd": r.min_usd, "max_usd": r.max_usd, "daily_max_usd": r.daily_max_usd}
+        return {"fee_pct": FEE_PCT, "target_margin_pct": TARGET_MARGIN_PCT, "min_fee_usd": MIN_FEE_USD, "min_usd": MIN_USD, "max_usd": MAX_USD, "daily_max_usd": DAILY_MAX_USD}
+    return {"fee_pct": r.fee_pct, "target_margin_pct": r.target_margin_pct, "min_fee_usd": r.min_fee_usd, "min_usd": r.min_usd, "max_usd": r.max_usd, "daily_max_usd": r.daily_max_usd}
 
 
 def _fee(session: Session, amount: float, currency: str) -> float:
@@ -126,34 +132,55 @@ def corridor_rates(session: Session) -> dict:
     return out
 
 
-def quote_send(session: Session, frm: str, to: str, amount: float, with_fee: bool = True) -> dict:
+def _provider_cost(session: Session, frm: str, to: str, pay_op: str, ben_op: str, paid: float, receive: float, cur_from: str, cur_to: str) -> float:
+    """Ce que l'agrégateur nous coûte pour cette opération, dans la devise du payeur : encaissement chez lui + versement chez le bénéficiaire."""
+    fin, fout = P.get_fee(session, frm, pay_op, "in"), P.get_fee(session, to, ben_op, "out")
+    cost = P.cost_local(fin, paid) if fin else 0.0
+    out = P.cost_local(fout, receive) if fout else 0.0
+    return cost + (out if cur_to == cur_from else geo.convert(session, out, cur_to, cur_from, with_margin=False))
+
+
+def _receive_for(session: Session, frm: str, to: str, send: float, cur_from: str, cur_to: str) -> float:
+    custom = override_rate(session, frm, to, "send") if cur_from != cur_to else None
+    if custom:  # taux d'envoi fixé par l'admin / l'agent : arrondi vers le bas, le bénéficiaire ne reçoit jamais plus que calculé
+        receive = math.floor(send * custom * 100) / 100
+    else:
+        margin = geo.rate_of(session, cur_to).margin_pct
+        raw = geo.convert(session, send, cur_from, cur_to, with_margin=False)
+        receive = geo.round_nice(raw * (1 - margin / 100), cur_to) if cur_from != cur_to else send
+    if cur_to == "CDF":
+        receive = float(math.floor(receive / 50) * 50)
+    return receive
+
+
+def quote_send(session: Session, frm: str, to: str, amount: float, with_fee: bool = True, pay_op: str = "", ben_op: str = "") -> dict:
     """Le payeur saisit `amount` (dans sa devise).
     with_fee=True : les frais s'ajoutent (il paie amount + frais, le bénéficiaire reçoit la conversion de `amount`).
-    with_fee=False : les frais sont retirés de `amount` (il paie exactement `amount`, le bénéficiaire reçoit la conversion de amount − frais)."""
+    with_fee=False : les frais sont retirés de `amount` (il paie exactement `amount`, le bénéficiaire reçoit la conversion de amount − frais).
+    Les frais couvrent TOUJOURS le coût de l'agrégateur pour les opérateurs choisis + la marge nette cible (réglages admin)."""
     check_corridor(frm, to)
     cur_from, cur_to = _currency(session, frm), _currency(session, to)
     _check_limits(session, amount, cur_from)
-    fee = _fee(session, amount, cur_from)
-    entered = amount
-    if not with_fee:
-        amount = round(amount - fee, 2)
-        if amount <= 0:
+    pay_op, ben_op = pay_op or P.default_operator(session, frm, "in"), ben_op or P.default_operator(session, to, "out")
+    base, target = _fee(session, amount, cur_from), get_settings(session)["target_margin_pct"]
+    fee, cost = base, 0.0
+    for _ in range(6):  # le coût dépend du montant payé, qui dépend des frais : on itère jusqu'à stabilité
+        send = amount if with_fee else round(amount - fee, 2)
+        if send <= 0:
             raise HTTPException(status_code=422, detail="Le montant est trop petit pour couvrir les frais.")
-    custom = override_rate(session, frm, to, "send") if cur_from != cur_to else None
-    if custom:  # taux d'envoi fixé par l'admin / l'agent : arrondi vers le bas, le bénéficiaire ne reçoit jamais plus que calculé
-        receive = math.floor(amount * custom * 100) / 100
-    else:
-        margin = geo.rate_of(session, cur_to).margin_pct
-        raw = geo.convert(session, amount, cur_from, cur_to, with_margin=False)
-        receive = geo.round_nice(raw * (1 - margin / 100), cur_to) if cur_from != cur_to else amount
-    if cur_to == "CDF":
-        receive = float(math.floor(receive / 50) * 50)  # jamais plus que ce qui est calculé
-    return {"from_country": frm.upper(), "to_country": to.upper(), "send_currency": cur_from, "send_amount": round(amount, 2), "fee": fee,
-            "total_paid": round(amount + fee, 2) if with_fee else round(entered, 2), "fee_mode": "added" if with_fee else "deducted",
-            "receive_currency": cur_to, "receive_amount": receive, "rate": round(receive / amount, 6) if amount else 0}
+        receive = _receive_for(session, frm, to, send, cur_from, cur_to)
+        paid = round(send + fee, 2) if with_fee else round(amount, 2)
+        cost = _provider_cost(session, frm, to, pay_op, ben_op, paid, receive, cur_from, cur_to)
+        new = P.round_up(max(base, cost + send * target / 100), cur_from)
+        if new == fee:
+            break
+        fee = new
+    return {"from_country": frm.upper(), "to_country": to.upper(), "send_currency": cur_from, "send_amount": round(send, 2), "fee": fee,
+            "total_paid": paid, "fee_mode": "added" if with_fee else "deducted", "pay_operator": pay_op, "receive_operator": ben_op,
+            "receive_currency": cur_to, "receive_amount": receive, "rate": round(receive / send, 6) if send else 0, "provider_cost": round(cost, 2)}
 
 
-def quote_receive(session: Session, payer_country: str, receiver_country: str, receive_amount: float) -> dict:
+def quote_receive(session: Session, payer_country: str, receiver_country: str, receive_amount: float, pay_op: str = "", ben_op: str = "") -> dict:
     """Pour une DEMANDE : le demandeur doit recevoir exactement `receive_amount` ; on calcule ce que le payeur débourse."""
     check_corridor(payer_country, receiver_country)
     cur_pay, cur_recv = _currency(session, payer_country), _currency(session, receiver_country)
@@ -168,10 +195,18 @@ def quote_receive(session: Session, payer_country: str, receiver_country: str, r
         per = geo.rate_of(session, cur_recv).per_usd
         send = receive_amount * geo.rate_of(session, cur_pay).per_usd / (per * (1 - margin / 100))
         send = float(math.ceil(send * 100) / 100)
-    fee = _fee(session, send, cur_pay)
+    pay_op, ben_op = pay_op or P.default_operator(session, payer_country, "in"), ben_op or P.default_operator(session, receiver_country, "out")
+    base, target = _fee(session, send, cur_pay), get_settings(session)["target_margin_pct"]
+    fee, cost = base, 0.0
+    for _ in range(6):
+        cost = _provider_cost(session, payer_country, receiver_country, pay_op, ben_op, send + fee, receive_amount, cur_pay, cur_recv)
+        new = P.round_up(max(base, cost + send * target / 100), cur_pay)
+        if new == fee:
+            break
+        fee = new
     return {"from_country": payer_country.upper(), "to_country": receiver_country.upper(), "send_currency": cur_pay, "send_amount": round(send, 2), "fee": fee,
-            "total_paid": round(send + fee, 2), "receive_currency": cur_recv, "receive_amount": round(receive_amount, 2),
-            "rate": round(receive_amount / send, 6) if send else 0}
+            "total_paid": round(send + fee, 2), "receive_currency": cur_recv, "receive_amount": round(receive_amount, 2), "pay_operator": pay_op,
+            "receive_operator": ben_op, "rate": round(receive_amount / send, 6) if send else 0, "provider_cost": round(cost, 2)}
 
 
 def check_daily(session: Session, user_id: int, amount_usd: float) -> None:

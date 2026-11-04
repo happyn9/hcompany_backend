@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     # --- CORS ---
     frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
     partner_invite_required: bool = True  # la candidature partenaire passe par un lien envoyé par H-Company
-    money_provider: str = "simulated"  # simulated tant qu'aucun agrégateur n'est branché
+    money_provider: str = "simulated"  # simulated | pawapay
+    pawapay_api_token: str = ""  # jeton API pawaPay (bearer) — sandbox ou production
+    pawapay_base_url: str = "https://api.sandbox.pawapay.io"  # production : https://api.pawapay.io
+    pawapay_poll_seconds: int = 90  # attente max de l'approbation du payeur (en production : passer aux callbacks)
     allowed_origins: str = "http://localhost:5173,http://localhost:4173"
 
     # --- OTP ---

@@ -22,6 +22,7 @@ from app.crossborder import models as crossborder_models  # noqa: F401
 from app.partnerhub import models as partnerhub_models  # noqa: F401
 from app.money import models as money_models  # noqa: F401
 from app.promos import models as promos_models  # noqa: F401
+from app.knowledge import models as knowledge_models  # noqa: F401
 
 config = context.config
 

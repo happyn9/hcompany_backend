@@ -38,6 +38,7 @@ class MoneyTransfer(SQLModel, table=True):
     expires_at: Optional[datetime] = None
     flagged: bool = False
     review_note: str = ""
+    provider_cost: float = 0  # coût estimé de l'agrégateur, dans la devise du payeur (pour la marge nette)
 
 
 class MoneyAgent(SQLModel, table=True):
@@ -73,10 +74,25 @@ class MoneyRate(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class MoneyOperatorFee(SQLModel, table=True):
+    """Tarif corrigé dans l'admin pour un opérateur et un sens (in = encaissement, out = versement). Absent = valeur par défaut de pricing.py."""
+    country: str = Field(primary_key=True, max_length=2)
+    operator: str = Field(primary_key=True)
+    direction: str = Field(primary_key=True, max_length=3)
+    enabled: bool = True
+    pct: float = 0.0
+    tiers_json: str = "[]"  # [[borne_exclusive | null, fixe_en_devise_locale], …]
+    confirmed: bool = False
+    note: str = ""
+    updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class MoneySettings(SQLModel, table=True):
     """Frais et plafonds H-Money (ligne unique id=1), réglés par l'admin. Montants en USD. Absente = valeurs par défaut du code."""
     id: int = Field(default=1, primary_key=True)
     fee_pct: float = 3.0
+    target_margin_pct: float = 1.0  # marge nette minimale visée APRÈS les coûts de l'agrégateur (% du montant envoyé)
     min_fee_usd: float = 0.5
     min_usd: float = 2.0
     max_usd: float = 1000.0

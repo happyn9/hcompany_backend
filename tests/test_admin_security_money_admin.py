@@ -116,7 +116,7 @@ def _tx(code, frm="ZM", to="CD"):
     with Session(engine) as s:
         s.add(MoneyTransfer(code=code, kind="send", user_id=1, payer_user_id=1, from_country=frm, to_country=to, send_currency="ZMW", send_amount=500,
                             fee=15, total_paid=515, receive_currency="USD", receive_amount=20, rate=0.04, counterpart_name="Jean",
-                            counterpart_phone="243812345678", counterpart_operator="mpesa", status="under_review", provider_ref="SIM-IN-X"))
+                            counterpart_phone="243812345678", counterpart_operator="orange", status="under_review", provider_ref="SIM-IN-X"))
         s.commit()
 
 
@@ -162,3 +162,25 @@ def test_fee_and_limits_settings(c):
     assert c.put(f"{A}/settings", json=body).status_code == 403
     c.st["as"] = "boss"
     c.put(f"{A}/settings", json={"fee_pct": 3, "min_fee_usd": 0.5, "min_usd": 2, "max_usd": 1000, "daily_max_usd": 2000})
+
+
+def test_operator_fees_admin(c):
+    c.st["as"] = "boss"
+    tok = c.post("/api/v1/admin-security/confirm", json={"password": "motdepasse1"}).json()["confirm_token"]
+    c.headers["X-Admin-Confirm"] = tok
+    rows = c.get(f"{A}/operators").json()
+    assert any(r["operator"] == "orange" and r["direction"] == "out" and r["pct"] == 1.0 and r["confirmed"] for r in rows)
+    assert any(r["operator"] == "airtel" and r["country"] == "ZM" and r["direction"] == "out" and not r["confirmed"] for r in rows)  # hypothèse signalée
+    base = c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()["fee"]
+    # l'agrégateur augmente le tarif Orange (versement) à 5 % : les frais suivent, la marge reste protégée
+    assert c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "enabled": True, "pct": 5, "tiers": [], "confirmed": True}).status_code == 200
+    assert c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()["fee"] > base
+    # désactiver Orange : il n'est plus proposé
+    c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "enabled": False, "pct": 5, "tiers": [], "confirmed": True})
+    assert [o["key"] for o in c.get("/api/v1/money/corridors").json()["operators"]["CD"] if o["receive"]] == ["airtel"]
+    assert c.put(f"{A}/operators", json={"country": "CD", "operator": "nope", "direction": "out", "pct": 1}).status_code == 422
+    assert c.put(f"{A}/operators", json={"country": "ZM", "operator": "mtn", "direction": "in", "pct": 1, "tiers": [[-5, 1]]}).status_code == 422
+    c.st["as"] = "client"
+    assert c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "pct": 1}).status_code == 403
+    c.st["as"] = "boss"
+    c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "enabled": True, "pct": 1, "tiers": [], "confirmed": True})

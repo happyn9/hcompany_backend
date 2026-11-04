@@ -34,7 +34,19 @@ def _require_verified(user: User) -> None:
 def corridors(session: Session = Depends(get_session)):
     geo.ensure_seed(session)
     cfg = svc.get_settings(session)
-    return {"countries": ["ZM", "CD"], "operators": {k: [{"key": a, "label": b} for a, b in v.items()] for k, v in svc.OPERATORS.items()},
+    from app.money import pricing as P
+    fees = P.all_fees(session)
+
+    def ops(country):
+        cheapest = {d: (P.enabled_ops(session, country, d) or [None])[0] for d in ("in", "out")}
+        rows = []
+        for key, label in svc.OPERATORS[country].items():
+            i, o = fees.get((country, key, "in")), fees.get((country, key, "out"))
+            rows.append({"key": key, "label": label, "pay": bool(i and i.enabled), "receive": bool(o and o.enabled),
+                         "cheapest_receive": bool(o and o.enabled and cheapest["out"] and cheapest["out"].operator == key and len(P.enabled_ops(session, country, "out")) > 1),
+                         "code": P.PAWAPAY_CODES.get((country, key))})
+        return rows
+    return {"countries": ["ZM", "CD"], "operators": {k: ops(k) for k in svc.OPERATORS},
             "limits_usd": {"min": cfg["min_usd"], "max": cfg["max_usd"], "daily": cfg["daily_max_usd"]}, "fee_pct": cfg["fee_pct"], "min_fee_usd": cfg["min_fee_usd"], "dial_codes": svc.DIAL,
             "currencies": {c: svc._currency(session, c) for c in ("ZM", "CD")}, "rates": svc.corridor_rates(session), "simulated": get_provider().simulated}
 
@@ -42,9 +54,23 @@ def corridors(session: Session = Depends(get_session)):
 @router.get("/quote")
 def quote(amount: float = Query(gt=0, le=10_000_000), source: str = Query(alias="from", min_length=2, max_length=2),
           target: str = Query(alias="to", min_length=2, max_length=2), mode: str = Query(default="send", pattern="^(send|receive)$"),
-          with_fee: bool = True, session: Session = Depends(get_session)):
+          with_fee: bool = True, pay_op: str = "", ben_op: str = "", session: Session = Depends(get_session)):
     """mode=send : le payeur envoie `amount`. mode=receive : le bénéficiaire doit recevoir `amount`."""
-    return svc.quote_send(session, source, target, amount, with_fee) if mode == "send" else svc.quote_receive(session, source, target, amount)
+    q = svc.quote_send(session, source, target, amount, with_fee, pay_op, ben_op) if mode == "send" else svc.quote_receive(session, source, target, amount, pay_op, ben_op)
+    q.pop("provider_cost", None)  # le coût interne de l'agrégateur n'est jamais montré au client
+    return q
+
+
+@router.get("/quote/compare")
+def quote_compare(amount: float = Query(gt=0, le=10_000_000), source: str = Query(alias="from", min_length=2, max_length=2),
+                  target: str = Query(alias="to", min_length=2, max_length=2), with_fee: bool = True, pay_op: str = "", session: Session = Depends(get_session)):
+    """Pour le sélecteur d'opérateur : ce que recevrait le bénéficiaire (et les frais) chez chaque opérateur disponible."""
+    from app.money import pricing as P
+    rows = []
+    for f in P.enabled_ops(session, target.upper(), "out"):
+        q = svc.quote_send(session, source, target, amount, with_fee, pay_op, f.operator)
+        rows.append({"operator": f.operator, "fee": q["fee"], "total_paid": q["total_paid"], "receive_amount": q["receive_amount"], "receive_currency": q["receive_currency"], "send_currency": q["send_currency"]})
+    return rows
 
 
 class SendIn(BaseModel):
@@ -81,10 +107,10 @@ def finalize_review(session: Session, t: MoneyTransfer, approve: bool, reason: s
         if p.ok:
             t.status = "completed"
             return
-        prov.refund(ref=t.provider_ref, amount=t.total_paid)
+        prov.refund(ref=t.provider_ref, amount=t.total_paid, currency=t.send_currency)
         t.status, t.failure_reason = "refunded", p.reason + " Le payeur a été remboursé."
         return
-    prov.refund(ref=t.provider_ref, amount=t.total_paid)
+    prov.refund(ref=t.provider_ref, amount=t.total_paid, currency=t.send_currency)
     t.status, t.failure_reason = "rejected", (reason or "Refusée après contrôle.") + " Le payeur a été remboursé."
 
 
@@ -92,16 +118,16 @@ def finalize_review(session: Session, t: MoneyTransfer, approve: bool, reason: s
 def send(payload: SendIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     _require_verified(user)
     frm, to = payload.from_country.upper(), payload.to_country.upper()
-    q = svc.quote_send(session, frm, to, payload.amount, payload.with_fee)
-    svc.check_operator(frm, payload.pay_operator)
-    svc.check_operator(to, payload.beneficiary_operator)
+    svc.check_operator(session, frm, payload.pay_operator, "in")
+    svc.check_operator(session, to, payload.beneficiary_operator, "out")
+    q = svc.quote_send(session, frm, to, payload.amount, payload.with_fee, payload.pay_operator, payload.beneficiary_operator)
     svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
     t = MoneyTransfer(code=svc.new_code(), kind="send", user_id=user.id, payer_user_id=user.id, from_country=frm, to_country=to,
                       send_currency=q["send_currency"], send_amount=q["send_amount"], fee=q["fee"], total_paid=q["total_paid"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"], rate=q["rate"],
                       counterpart_name=payload.beneficiary_name.strip(), counterpart_phone=svc.normalize_phone(payload.beneficiary_phone, to),
                       counterpart_operator=payload.beneficiary_operator, pay_phone=svc.normalize_phone(payload.pay_phone, frm),
-                      pay_operator=payload.pay_operator, note=payload.note.strip(), provider=get_provider().name)
+                      pay_operator=payload.pay_operator, note=payload.note.strip(), provider=get_provider().name, provider_cost=q["provider_cost"])
     _run_payment(session, t, frm)
     t.updated_at = datetime.utcnow()
     session.add(t); session.commit(); session.refresh(t)
@@ -123,8 +149,8 @@ class RequestIn(BaseModel):
 def request_money(payload: RequestIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     _require_verified(user)
     pc, rc = payload.payer_country.upper(), payload.receiver_country.upper()
-    q = svc.quote_receive(session, pc, rc, payload.amount)
-    svc.check_operator(rc, payload.receive_operator)
+    svc.check_operator(session, rc, payload.receive_operator, "out")
+    q = svc.quote_receive(session, pc, rc, payload.amount, "", payload.receive_operator)
     t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"],
                       counterpart_name=payload.payer_name.strip(), counterpart_phone=svc.normalize_phone(payload.payer_phone, pc) if payload.payer_phone else "",
@@ -146,10 +172,11 @@ def _get_request(session: Session, code: str) -> MoneyTransfer:
 
 
 @router.get("/requests/{code}")
-def view_request(code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    """Aperçu pour la personne sollicitée : combien elle paierait, dans sa devise."""
+def view_request(code: str, pay_op: str = "", session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Aperçu pour la personne sollicitée : combien elle paierait, dans sa devise (selon l'opérateur choisi)."""
     t = _get_request(session, code)
-    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount)
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, pay_op, t.provider_ref.split("|", 1)[1] if "|" in t.provider_ref else "")
+    q.pop("provider_cost", None)
     asker = session.get(User, t.user_id)
     return {**_read(t, user.id), "asker_name": (asker.full_name if asker else "") or "Un proche", "quote": q}
 
@@ -167,11 +194,11 @@ def pay_request(code: str, payload: PayIn, session: Session = Depends(get_sessio
         raise HTTPException(status_code=409, detail="Cette demande n'est plus en attente.")
     if t.user_id == user.id:
         raise HTTPException(status_code=422, detail="Vous ne pouvez pas payer votre propre demande.")
-    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount)
-    svc.check_operator(t.from_country, payload.pay_operator)
+    svc.check_operator(session, t.from_country, payload.pay_operator, "in")
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, payload.pay_operator, t.provider_ref.split("|", 1)[1])
     svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
     dest_phone, dest_op = t.provider_ref.split("|", 1)
-    t.payer_user_id, t.send_amount, t.fee, t.total_paid, t.rate = user.id, q["send_amount"], q["fee"], q["total_paid"], q["rate"]
+    t.payer_user_id, t.send_amount, t.fee, t.total_paid, t.rate, t.provider_cost = user.id, q["send_amount"], q["fee"], q["total_paid"], q["rate"], q["provider_cost"]
     t.pay_phone, t.pay_operator = svc.normalize_phone(payload.pay_phone, t.from_country), payload.pay_operator
     t.counterpart_phone, t.counterpart_operator = dest_phone, dest_op  # versement vers le demandeur
     _run_payment(session, t, t.from_country)
