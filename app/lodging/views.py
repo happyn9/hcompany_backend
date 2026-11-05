@@ -6,7 +6,7 @@ from sqlmodel import Session, func, select
 
 from app.lodging import schemas as S
 from app.lodging.models import (
-    Booking, BookingEvent, LodgeFavorite, LodgeHost, LodgeReview, PriceRule, Property, PropertyBlock,
+    RENT_TYPES, Booking, BookingEvent, LodgeFavorite, LodgeHost, LodgeReview, PriceRule, Property, PropertyBlock,
 )
 from app.lodging.services import (
     POLICY_TEXT, dispute_window_open, property_images, quote_stay, refund_for_cancellation,
@@ -86,6 +86,20 @@ def review_summary(session: Session, property_id: int) -> S.ReviewSummary:
     )
 
 
+def rent_terms(session: Session, p: Property, host: Optional[LodgeHost]) -> Optional[dict]:
+    """Location au mois : ce que le preneur paie AVANT d'entrer (loyers d'avance + garantie + commission H-Company).
+    La commission est calculée dès que l'annonce existe (même en attente de validation) : bailleur et preneur voient le même chiffre."""
+    if p.type not in RENT_TYPES:
+        return None
+    from app.lodging.services import commission_rate_for
+    rate = commission_rate_for(session, host) if host else 0.0
+    rent = round(p.rent_per_month, 2)
+    adv, dep = round(rent * p.advance_months, 2), round(rent * p.deposit_months, 2)
+    com = round(rent * rate / 100, 2)  # une seule fois, à la conclusion, sur un mois de loyer
+    return {"monthly": rent, "advance_months": p.advance_months, "advance_total": adv, "deposit_months": p.deposit_months, "deposit_total": dep,
+            "lease_min_months": p.lease_min_months, "commission_pct": rate, "commission_amount": com, "move_in_total": round(adv + dep + com, 2)}
+
+
 def detail(session: Session, p: Property, favs: Optional[set] = None, *, similar: Optional[list] = None) -> S.PropertyDetail:
     host = session.get(LodgeHost, p.host_id)
     base = card(session, p, host, favs).model_dump()
@@ -99,7 +113,7 @@ def detail(session: Session, p: Property, favs: Optional[set] = None, *, similar
         **base, summary=p.summary, description=p.description, country=p.country,
         address_hint=", ".join(x for x in (p.area, p.city, p.country) if x), cleaning_fee=p.cleaning_fee,
         weekly_discount=p.weekly_discount, monthly_discount=p.monthly_discount, units=p.units, min_nights=p.min_nights,
-        max_nights=p.max_nights, check_in_from=p.check_in_from, check_out_until=p.check_out_until, house_rules=p.house_rules,
+        max_nights=p.max_nights, check_in_from=p.check_in_from, check_out_until=p.check_out_until, house_rules=p.house_rules, rent_terms=rent_terms(session, p, host),
         cancellation_policy=p.cancellation_policy, cancellation_label=label, cancellation_text=text,
         gallery=[{"path": i.path, "caption": i.caption} for i in imgs], host=host_public(session, host),
         review_summary=review_summary(session, p.id), reviews=[review_read(session, r) for r in reviews],

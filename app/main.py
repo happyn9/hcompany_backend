@@ -32,7 +32,7 @@ from app.restaurant.routers import admin as restaurant_admin, owner as restauran
 from app.tourism.routers import admin as tourism_admin, owner as tourism_owner, public as tourism_public
 from app.crossborder.routers import admin as geo_admin, public as geo_public
 from app.partnerhub import routers as partnerhub
-from app.money import router as money_router, admin as money_admin
+from app.money import router as money_router, admin as money_admin, invoices as money_invoices
 from app import admin_security
 from app.promos import router as promos_router
 from app.knowledge import router as knowledge_router
@@ -252,6 +252,8 @@ app.include_router(promos_router.router)
 app.include_router(knowledge_router.router)
 app.include_router(knowledge_router.admin)
 app.include_router(money_router.router)
+app.include_router(money_invoices.router)
+app.include_router(money_invoices.ledger_router)
 app.include_router(money_admin.admin_router)
 app.include_router(money_admin.agent_router)
 app.include_router(partnerhub.router)

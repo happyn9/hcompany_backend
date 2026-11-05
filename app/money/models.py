@@ -99,3 +99,41 @@ class MoneySettings(SQLModel, table=True):
     daily_max_usd: float = 2000.0
     updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Invoice(SQLModel, table=True):
+    """Facture H-Money : l'émetteur la génère et l'envoie ; le client la règle en mobile money.
+    Le paiement passe par une « demande » H-Money (même contrôle, mêmes frais, même séquestre)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    user_id: int = Field(foreign_key="user.id", index=True)  # émetteur
+    client_name: str
+    client_email: str = Field(default="", index=True)
+    client_phone: str = ""
+    client_country: str = "ZM"
+    currency: str = ""
+    items_json: str = "[]"  # [{label, qty, unit_price}]
+    total: float = 0
+    note: str = ""
+    due_date: Optional[datetime] = None
+    transfer_code: str = Field(default="", index=True)
+    cancelled: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ServicePayment(SQLModel, table=True):
+    """Registre des paiements des services H-Company (Shopping, Logement, Transport, Colis…) réglés via H-Money :
+    chaque service enregistre son chiffre d'affaires (brut), sa commission (bénéfice H-Company) et la part du prestataire."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    service: str = Field(index=True)  # shopping | lodge | transport | colis | restaurant | tourism | …
+    ref: str = Field(index=True)  # code de la commande / réservation
+    payer_user_id: int = Field(foreign_key="user.id", index=True)
+    payee_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)  # vendeur, hôte, agence…
+    currency: str
+    gross: float = 0
+    commission: float = 0
+    net_to_payee: float = 0
+    status: str = Field(default="held", index=True)  # held (séquestre) | released | refunded
+    transfer_ref: str = ""
+    note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)

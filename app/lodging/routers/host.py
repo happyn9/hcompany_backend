@@ -16,7 +16,7 @@ from app.deps import get_current_user
 from app.lodging import schemas as S
 from app.lodging import views
 from app.lodging.models import (
-    Booking, BookingMessage, LodgeHost, LodgePayout, LodgeReview, PriceRule, Property, PropertyBlock, PropertyImage,
+    RENT_TYPES, Booking, BookingMessage, LodgeHost, LodgePayout, LodgeReview, PriceRule, Property, PropertyBlock, PropertyImage,
 )
 from app.lodging.services import (
     add_event, availability_conflict, clean_amenities, daterange, expire_overdue, get_float, host_accept, notify_user,
@@ -132,6 +132,11 @@ def _sync_images(session: Session, p: Property, paths: list[str], user: User) ->
 
 
 def _validate_property(payload: S.PropertyWrite) -> None:
+    if payload.type in RENT_TYPES:
+        if payload.rent_per_month <= 0:
+            raise HTTPException(status_code=422, detail="Indiquez le loyer mensuel.")
+    elif payload.price_per_night <= 0:
+        raise HTTPException(status_code=422, detail="Indiquez le prix par nuit.")
     if payload.min_nights > payload.max_nights:
         raise HTTPException(status_code=422, detail="Le séjour minimum dépasse le séjour maximum.")
     if payload.monthly_discount and payload.monthly_discount < payload.weekly_discount:
@@ -142,10 +147,13 @@ def _validate_property(payload: S.PropertyWrite) -> None:
 
 def _fill(p: Property, payload: S.PropertyWrite) -> None:
     for f in ("title", "summary", "description", "type", "country", "city", "area", "address", "latitude", "longitude",
-              "price_per_night", "cleaning_fee", "weekly_discount", "monthly_discount", "max_guests", "bedrooms", "beds",
+              "price_per_night", "rent_per_month", "advance_months", "deposit_months", "lease_min_months", "cleaning_fee", "weekly_discount", "monthly_discount", "max_guests", "bedrooms", "beds",
               "bathrooms", "units", "min_nights", "max_nights", "check_in_from", "check_out_until", "house_rules",
               "cancellation_policy", "instant_book"):
         setattr(p, f, getattr(payload, f))
+    if payload.type in RENT_TYPES:  # le prix « à la nuit » sert seulement de repère pour la recherche
+        p.price_per_night = round(payload.rent_per_month / 30, 2)
+        p.min_nights, p.max_nights = 1, 365
     p.amenities = clean_amenities(payload.amenities)
     p.updated_at = datetime.utcnow()
 
@@ -166,7 +174,7 @@ def create_property(payload: S.PropertyWrite, session: Session = Depends(get_ses
     if session.exec(select(func.count(Property.id)).where(Property.host_id == h.id)).one() >= MAX_PROPERTIES:
         raise HTTPException(status_code=409, detail=f"Vous pouvez publier jusqu'à {MAX_PROPERTIES} logements.")
     _validate_property(payload)
-    p = Property(slug=unique_slug(session, Property, f"{payload.title}-{payload.city}"), host_id=h.id, price_per_night=payload.price_per_night)
+    p = Property(slug=unique_slug(session, Property, f"{payload.title}-{payload.city}"), host_id=h.id, price_per_night=payload.price_per_night)  # recalculé par _fill pour les locations
     _fill(p, payload)
     session.add(p)
     session.flush()

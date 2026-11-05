@@ -175,7 +175,7 @@ def _get_request(session: Session, code: str) -> MoneyTransfer:
 def view_request(code: str, pay_op: str = "", session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     """Aperçu pour la personne sollicitée : combien elle paierait, dans sa devise (selon l'opérateur choisi)."""
     t = _get_request(session, code)
-    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, pay_op, t.provider_ref.split("|", 1)[1] if "|" in t.provider_ref else "")
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, pay_op, t.provider_ref.split("|", 1)[1] if "|" in t.provider_ref else "", domestic=t.from_country == t.to_country)
     q.pop("provider_cost", None)
     asker = session.get(User, t.user_id)
     return {**_read(t, user.id), "asker_name": (asker.full_name if asker else "") or "Un proche", "quote": q}
@@ -195,7 +195,7 @@ def pay_request(code: str, payload: PayIn, session: Session = Depends(get_sessio
     if t.user_id == user.id:
         raise HTTPException(status_code=422, detail="Vous ne pouvez pas payer votre propre demande.")
     svc.check_operator(session, t.from_country, payload.pay_operator, "in")
-    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, payload.pay_operator, t.provider_ref.split("|", 1)[1])
+    q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, payload.pay_operator, t.provider_ref.split("|", 1)[1], domestic=t.from_country == t.to_country)
     svc.check_daily(session, user.id, svc.usd_of(session, q["send_amount"], q["send_currency"]))
     dest_phone, dest_op = t.provider_ref.split("|", 1)
     t.payer_user_id, t.send_amount, t.fee, t.total_paid, t.rate, t.provider_cost = user.id, q["send_amount"], q["fee"], q["total_paid"], q["rate"], q["provider_cost"]

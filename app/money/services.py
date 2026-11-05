@@ -58,9 +58,9 @@ def new_code() -> str:
     return "HM-" + secrets.token_hex(4).upper()
 
 
-def check_corridor(frm: str, to: str) -> None:
+def check_corridor(frm: str, to: str, domestic: bool = False) -> None:
     frm, to = frm.upper(), to.upper()
-    if frm == to or frm not in CORRIDOR or to not in CORRIDOR:
+    if (frm == to and not domestic) or frm not in CORRIDOR or to not in CORRIDOR:
         raise HTTPException(status_code=422, detail="Pour l'instant : entre la Zambie et la RD Congo.")
 
 
@@ -180,9 +180,9 @@ def quote_send(session: Session, frm: str, to: str, amount: float, with_fee: boo
             "receive_currency": cur_to, "receive_amount": receive, "rate": round(receive / send, 6) if send else 0, "provider_cost": round(cost, 2)}
 
 
-def quote_receive(session: Session, payer_country: str, receiver_country: str, receive_amount: float, pay_op: str = "", ben_op: str = "") -> dict:
+def quote_receive(session: Session, payer_country: str, receiver_country: str, receive_amount: float, pay_op: str = "", ben_op: str = "", domestic: bool = False) -> dict:
     """Pour une DEMANDE : le demandeur doit recevoir exactement `receive_amount` ; on calcule ce que le payeur débourse."""
-    check_corridor(payer_country, receiver_country)
+    check_corridor(payer_country, receiver_country, domestic)
     cur_pay, cur_recv = _currency(session, payer_country), _currency(session, receiver_country)
     _check_limits(session, receive_amount, cur_recv)
     custom = override_rate(session, payer_country, receiver_country, "withdraw") if cur_pay != cur_recv else None

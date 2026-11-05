@@ -11,6 +11,7 @@ from typing import Optional
 
 from sqlmodel import Field, SQLModel
 
+RENT_TYPES = ("house", "apartment", "villa", "studio", "room")  # location au mois : loyer + mois d'avance + garantie
 PROPERTY_TYPES = ("lodge", "hotel_room", "apartment", "house", "villa", "guesthouse", "studio", "room")
 PROPERTY_STATUSES = ("draft", "pending", "active", "paused", "rejected", "suspended")
 CANCELLATION_POLICIES = ("flexible", "moderate", "strict")
@@ -65,7 +66,11 @@ class Property(SQLModel, table=True):
     address: str = ""
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    price_per_night: float
+    price_per_night: float = 0
+    rent_per_month: float = 0  # location longue durée (maison, appartement…)
+    advance_months: int = 0  # loyers à payer avant l'entrée
+    deposit_months: float = 0  # garantie / caution, en mois de loyer
+    lease_min_months: int = 0
     cleaning_fee: float = 0
     weekly_discount: float = 0  # % à partir de 7 nuits
     monthly_discount: float = 0  # % à partir de 28 nuits

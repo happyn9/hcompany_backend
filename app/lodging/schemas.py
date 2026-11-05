@@ -94,6 +94,7 @@ class PropertyDetail(PropertyCard):
     check_in_from: str = "14:00"
     check_out_until: str = "11:00"
     house_rules: str = ""
+    rent_terms: Optional[dict] = None  # locations au mois : loyer, avance, garantie, commission, total à l'entrée
     cancellation_policy: str = "flexible"
     cancellation_label: str = ""
     cancellation_text: str = ""
@@ -362,7 +363,11 @@ class PropertyWrite(BaseModel):
     address: str = Field(default="", max_length=240)
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
-    price_per_night: float = Field(gt=0, le=1_000_000)
+    price_per_night: float = Field(default=0, ge=0, le=1_000_000)  # séjours à la nuit (lodge, hôtel…)
+    rent_per_month: float = Field(default=0, ge=0, le=10_000_000)  # locations au mois (maison, appartement…)
+    advance_months: int = Field(default=0, ge=0, le=12)
+    deposit_months: float = Field(default=0, ge=0, le=12)
+    lease_min_months: int = Field(default=0, ge=0, le=60)
     cleaning_fee: float = Field(default=0, ge=0, le=100_000)
     weekly_discount: float = Field(default=0, ge=0, le=60)
     monthly_discount: float = Field(default=0, ge=0, le=80)

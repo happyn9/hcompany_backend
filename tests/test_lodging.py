@@ -399,3 +399,20 @@ def test_favorites_admin_hosts_and_settings(ctx):
     assert ctx.post(f"{API}/host/properties/{pid}/pause").json()["status"] == "paused"
     as_(ctx, "guest")
     assert ctx.post(f"{API}/quote", json={"property_id": pid, "check_in": d(60), "check_out": d(61), "guests": 1}).status_code == 404
+
+
+def test_rent_listing_terms_visible_to_both(ctx):
+    """Maison / appartement : loyer + mois d'avance + garantie + commission, visibles dès l'annonce en attente."""
+    as_(ctx, "host")
+    r = ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="house", price_per_night=0, rent_per_month=5000, advance_months=2, deposit_months=1, lease_min_months=12))
+    assert r.status_code == 201, r.text
+    t = r.json()["rent_terms"]
+    assert t["monthly"] == 5000 and t["advance_total"] == 10000 and t["deposit_total"] == 5000
+    assert t["commission_amount"] == round(5000 * t["commission_pct"] / 100, 2)
+    assert t["move_in_total"] == round(10000 + 5000 + t["commission_amount"], 2)
+    # un type « à la nuit » n'a pas de conditions de location
+    r2 = ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="hotel_room", title="Chambre hôtel"))
+    assert r2.status_code == 201 and r2.json()["rent_terms"] is None
+    # validations par type
+    assert ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="apartment", price_per_night=0, rent_per_month=0)).status_code == 422
+    assert ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="lodge", price_per_night=0)).status_code == 422
