@@ -395,7 +395,14 @@ def agent_reply(code: str, payload: MessageIn, session: Session = Depends(get_se
         t.agent_user_id, t.status = user.id, "assigned"
     t.last_message_at = datetime.utcnow()
     session.add(t)
+    last_q = session.exec(select(SupportMessage).where(SupportMessage.thread_id == t.id, SupportMessage.sender_role == "user").order_by(SupportMessage.id.desc())).first()
     session.add(SupportMessage(thread_id=t.id, sender_id=user.id, sender_role="agent", body=payload.body.strip()))
+    if last_q:  # l'assistante apprend de la réponse de l'agent (anonymisée, et seulement si réutilisable)
+        try:
+            from app.knowledge.router import learn_from_agent
+            learn_from_agent(session, t.code, last_q.body, payload.body.strip())
+        except Exception:  # apprendre ne doit jamais empêcher un agent de répondre
+            pass
     session.commit()
     return {"messages": _messages(session, t)}
 
