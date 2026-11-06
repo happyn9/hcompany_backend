@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # --- Cookies ---
     cookie_domain: Optional[str] = None
     cookie_secure: bool = False  # True obligatoire en production (HTTPS)
+    cookie_samesite: Optional[str] = None  # none | lax | strict ; vide = « none » en production (site et API sur deux domaines), « lax » sinon. « lax »/« strict » si l'API est servie par le même domaine que le site (proxy)
 
     # --- CORS ---
     frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
@@ -145,10 +146,24 @@ def get_settings() -> "Settings":
 
 settings = get_settings()
 
-# Garde-fou : on refuse de démarrer en production avec la clé secrète par défaut.
-if settings.is_production and settings.secret_key == "dev-shared-secret-change-in-production-CHANGEME":
-    raise RuntimeError(
-        "SECRET_KEY par défaut détectée en environnement de production. "
-        "Générez-en une (ex: `python -c \"import secrets; print(secrets.token_urlsafe(64))\"`) "
-        "et définissez-la dans .env avant de démarrer."
-    )
+# Garde-fous : en production, on refuse de démarrer avec une configuration dangereuse.
+def _production_problems(s: "Settings") -> list[str]:
+    bad = []
+    if s.secret_key.startswith("dev-shared-secret") or "CHANGEME" in s.secret_key or len(s.secret_key) < 32:
+        bad.append("SECRET_KEY absente, par défaut ou trop courte (32 caractères minimum) — `python -c \"import secrets; print(secrets.token_urlsafe(64))\"`")
+    if not s.cookie_secure:
+        bad.append("COOKIE_SECURE doit être true (HTTPS)")
+    origins = s.cors_origins
+    if not origins or "*" in origins or any("localhost" in o or "127.0.0.1" in o for o in origins):
+        bad.append("ALLOWED_ORIGINS doit lister uniquement vos vrais domaines (pas de *, pas de localhost)")
+    if s.money_provider == "pawapay" and not s.pawapay_api_token:
+        bad.append("PAWAPAY_API_TOKEN manquant alors que MONEY_PROVIDER=pawapay")
+    if s.cookie_samesite and s.cookie_samesite.lower() not in ("none", "lax", "strict"):
+        bad.append("COOKIE_SAMESITE doit valoir none, lax ou strict")
+    return bad
+
+
+if settings.is_production:
+    _problems = _production_problems(settings)
+    if _problems:
+        raise RuntimeError("Configuration de production refusée :\n - " + "\n - ".join(_problems))

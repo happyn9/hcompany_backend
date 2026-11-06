@@ -187,7 +187,8 @@ if settings.sentry_dsn:
         traces_sample_rate=0.1,
     )
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+# En production, la documentation interactive et le schéma OpenAPI ne sont pas exposés.
+app = FastAPI(title=settings.app_name, lifespan=lifespan, docs_url=None if settings.is_production else "/docs", redoc_url=None if settings.is_production else "/redoc", openapi_url=None if settings.is_production else "/openapi.json")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -197,8 +198,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Admin-Confirm", "X-Requested-With"],
 )
 
 

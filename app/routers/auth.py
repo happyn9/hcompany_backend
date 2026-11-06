@@ -44,7 +44,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         # chaque actualisation de page — jamais vu en local où site et API
         # partagent le même domaine (localhost). "none" exige "Secure=true"
         # (voir COOKIE_SECURE), déjà en place en production.
-        samesite="none" if settings.cookie_secure else "lax",
+        samesite=(settings.cookie_samesite or ("none" if settings.cookie_secure else "lax")).lower(),
         domain=settings.cookie_domain,
         max_age=settings.refresh_token_expire_days * 24 * 3600,
         path="/api/v1/auth",

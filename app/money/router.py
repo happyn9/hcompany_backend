@@ -137,7 +137,8 @@ def send(payload: SendIn, session: Session = Depends(get_session), user: User = 
 class RequestIn(BaseModel):
     payer_country: str = Field(min_length=2, max_length=2)
     receiver_country: str = Field(min_length=2, max_length=2)
-    amount: float = Field(gt=0, le=10_000_000)  # ce que vous voulez RECEVOIR (devise de votre pays)
+    amount: Optional[float] = Field(default=None, gt=0, le=10_000_000)  # (ancien) montant dans la devise de réception
+    amount_usd: Optional[float] = Field(default=None, gt=0, le=1_000_000)  # ce que vous voulez RECEVOIR, toujours saisi en dollars
     receive_phone: str = Field(min_length=6, max_length=24)
     receive_operator: str
     payer_name: str = Field(min_length=2, max_length=120)
@@ -150,7 +151,13 @@ def request_money(payload: RequestIn, session: Session = Depends(get_session), u
     _require_verified(user)
     pc, rc = payload.payer_country.upper(), payload.receiver_country.upper()
     svc.check_operator(session, rc, payload.receive_operator, "out")
-    q = svc.quote_receive(session, pc, rc, payload.amount, "", payload.receive_operator)
+    if payload.amount_usd is not None:  # saisie en dollars ; conversion au taux du marché dans la devise de réception
+        amount = svc.geo.convert(session, payload.amount_usd, "USD", svc.currency_of(session, rc), with_margin=False)
+    elif payload.amount is not None:
+        amount = payload.amount
+    else:
+        raise HTTPException(status_code=422, detail="Indiquez le montant en dollars.")
+    q = svc.quote_receive(session, pc, rc, amount, "", payload.receive_operator)
     t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"],
                       counterpart_name=payload.payer_name.strip(), counterpart_phone=svc.normalize_phone(payload.payer_phone, pc) if payload.payer_phone else "",
@@ -227,3 +234,10 @@ def mine(session: Session = Depends(get_session), user: User = Depends(get_curre
     rows = session.exec(select(MoneyTransfer).where(or_(MoneyTransfer.user_id == user.id, MoneyTransfer.payer_user_id == user.id))
                         .order_by(MoneyTransfer.created_at.desc()).limit(100)).all()
     return [_read(t, user.id) for t in rows]
+
+
+@router.get("/change")
+def change(amount: float = Query(gt=0, le=10_000_000), source: str = Query(alias="from", min_length=3, max_length=3), target: str = Query(alias="to", min_length=3, max_length=3),
+           session: Session = Depends(get_session)):
+    """Change de monnaie en dollars (USD vers ZMW/CDF et inverse) au taux H-Money affiché, marge déduite. Devis : aucun argent ne bouge."""
+    return svc.change_quote(session, amount, source, target)

@@ -256,3 +256,26 @@ def test_pawapay_adapter_with_fake_server():
     rej = p.collect(country="ZM", currency="ZMW", amount=13, phone="260961112233", operator="airtel", reference="HM-2")
     assert not rej.ok and "introuvable" in rej.reason
     assert p.refund(ref=ok.ref, amount=100, currency="ZMW").ok
+
+
+def test_request_in_usd_and_change(c):
+    """Demander : le montant se saisit en dollars. Change : devis USD ⇄ ZMW."""
+    ch = c.get(f"{M}/change", params={"amount": 100, "from": "USD", "to": "ZMW"})
+    assert ch.status_code == 200, ch.text
+    j = ch.json()
+    assert j["receive"] > 0 and j["rate"] <= j["mid_rate"]
+    back = c.get(f"{M}/change", params={"amount": j["receive"], "from": "ZMW", "to": "USD"}).json()
+    assert back["receive"] <= 100  # aller-retour : jamais gagnant pour l'utilisateur
+    assert c.get(f"{M}/change", params={"amount": 5, "from": "ZMW", "to": "CDF"}).status_code == 422
+    assert c.get(f"{M}/change", params={"amount": 5, "from": "EUR", "to": "USD"}).status_code == 422
+
+
+def test_request_amount_entered_in_usd(c):
+    c.st["as"] = "ana"
+    r = c.post(f"{M}/requests", json={"payer_country": "CD", "receiver_country": "ZM", "amount_usd": 20, "receive_phone": "0961112233",
+                                     "receive_operator": "airtel", "payer_name": "Jean"})
+    assert r.status_code == 201, r.text
+    zmw = r.json()["receive_amount"]
+    usd = c.get(f"{M}/change", params={"amount": zmw, "from": "ZMW", "to": "USD"}).json()["usd_value"]
+    assert 19.5 <= usd <= 20.5  # ≈ 20 USD, converti au taux du marché
+    assert c.post(f"{M}/requests", json={"payer_country": "CD", "receiver_country": "ZM", "receive_phone": "0961112233", "receive_operator": "airtel", "payer_name": "Jean"}).status_code == 422

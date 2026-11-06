@@ -220,3 +220,25 @@ def check_daily(session: Session, user_id: int, amount_usd: float) -> None:
 
 def usd_of(session: Session, amount: float, currency: str) -> float:
     return _usd(session, amount, currency)
+
+
+CHANGE_CURRENCIES = ("USD", "ZMW", "CDF")
+
+
+def currency_of(session: Session, country: str) -> str:
+    return _currency(session, country)
+
+
+def change_quote(session: Session, amount: float, source: str, target: str) -> dict:
+    """Devis de change : taux du marché moins la marge H-Money de la devise reçue (le dollar n'a pas de marge)."""
+    s, t = source.upper(), target.upper()
+    if s not in CHANGE_CURRENCIES or t not in CHANGE_CURRENCIES or s == t or "USD" not in (s, t):
+        raise HTTPException(status_code=422, detail="Le change se fait entre le dollar (USD) et le kwacha (ZMW) ou le franc congolais (CDF).")
+    rs = geo.rate_of(session, s) if s != "USD" else None
+    rt = geo.rate_of(session, t) if t != "USD" else None
+    per_s, per_t = (rs.per_usd if rs else 1.0), (rt.per_usd if rt else 1.0)
+    margin = rt.margin_pct if rt else 0.0
+    mid = per_t / per_s
+    rate = mid * (1 - margin / 100)
+    out = geo.round_nice(amount * rate, t) if t != "USD" else round(amount * rate, 2)
+    return {"from": s, "to": t, "amount": round(amount, 2), "mid_rate": round(mid, 6), "rate": round(rate, 6), "margin_pct": margin, "receive": out, "usd_value": round(amount / per_s, 2)}
