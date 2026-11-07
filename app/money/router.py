@@ -21,7 +21,7 @@ def _read(t: MoneyTransfer, viewer_id: int) -> dict:
     return {"code": t.code, "kind": t.kind, "role": role, "status": t.status, "from_country": t.from_country, "to_country": t.to_country,
             "send_currency": t.send_currency, "send_amount": t.send_amount, "fee": t.fee, "total_paid": t.total_paid,
             "receive_currency": t.receive_currency, "receive_amount": t.receive_amount, "rate": t.rate, "counterpart_name": t.counterpart_name,
-            "counterpart_phone": t.counterpart_phone, "note": t.note, "failure_reason": t.failure_reason, "created_at": t.created_at.isoformat(),
+            "counterpart_phone": t.counterpart_phone, "counterpart_operator": t.counterpart_operator or "", "note": t.note, "failure_reason": t.failure_reason, "created_at": t.created_at.isoformat(),
             "expires_at": t.expires_at.isoformat() if t.expires_at else None, "simulated": t.provider == "simulated"}
 
 
@@ -43,7 +43,7 @@ def corridors(session: Session = Depends(get_session)):
         for key, label in svc.OPERATORS[country].items():
             i, o = fees.get((country, key, "in")), fees.get((country, key, "out"))
             rows.append({"key": key, "label": label, "pay": bool(i and i.enabled), "receive": bool(o and o.enabled),
-                         "cheapest_receive": bool(o and o.enabled and cheapest["out"] and cheapest["out"].operator == key and len(P.enabled_ops(session, country, "out")) > 1),
+                         "cheapest_receive": bool(o and o.enabled and cheapest["out"] and cheapest["out"].operator == key and len({x.pct for x in P.enabled_ops(session, country, "out")}) > 1),
                          "code": P.PAWAPAY_CODES.get((country, key))})
         return rows
     return {"countries": ["ZM", "CD"], "operators": {k: ops(k) for k in svc.OPERATORS},
@@ -141,7 +141,7 @@ class RequestIn(BaseModel):
     amount_usd: Optional[float] = Field(default=None, gt=0, le=1_000_000)  # ce que vous voulez RECEVOIR, toujours saisi en dollars
     receive_phone: str = Field(min_length=6, max_length=24)
     receive_operator: str
-    payer_name: str = Field(min_length=2, max_length=120)
+    payer_name: str = Field(default="", max_length=120)
     payer_phone: str = Field(default="", max_length=24)
     note: str = Field(default="", max_length=200)
 
@@ -160,7 +160,7 @@ def request_money(payload: RequestIn, session: Session = Depends(get_session), u
     q = svc.quote_receive(session, pc, rc, amount, "", payload.receive_operator)
     t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
                       receive_currency=q["receive_currency"], receive_amount=q["receive_amount"],
-                      counterpart_name=payload.payer_name.strip(), counterpart_phone=svc.normalize_phone(payload.payer_phone, pc) if payload.payer_phone else "",
+                      counterpart_name=payload.payer_name.strip() or "Proche", counterpart_phone=svc.normalize_phone(payload.payer_phone, pc) if payload.payer_phone else "",
                       # le numéro de réception du demandeur est conservé dans pay_phone/pay_operator côté « receveur »
                       pay_phone="", pay_operator="", note=payload.note.strip(), status="awaiting_payer", provider=get_provider().name,
                       expires_at=datetime.utcnow() + timedelta(days=svc.REQUEST_TTL_DAYS))
@@ -234,6 +234,30 @@ def mine(session: Session = Depends(get_session), user: User = Depends(get_curre
     rows = session.exec(select(MoneyTransfer).where(or_(MoneyTransfer.user_id == user.id, MoneyTransfer.payer_user_id == user.id))
                         .order_by(MoneyTransfer.created_at.desc()).limit(100)).all()
     return [_read(t, user.id) for t in rows]
+
+
+class ProfileIn(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(default="", max_length=24)
+    country: str = Field(default="", max_length=2)
+
+
+@router.post("/profile")
+def save_profile(payload: ProfileIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Première opération : on complète le compte (nom, numéro) seulement s'il était vide. Jamais d'écrasement silencieux."""
+    changed = {}
+    if not (user.full_name or "").strip():
+        user.full_name = " ".join(payload.full_name.split()); changed["full_name"] = True
+    if payload.phone and not user.phone:
+        c = (payload.country or "ZM").upper()
+        try:
+            ph = "+" + svc.normalize_phone(payload.phone, c if c in svc.DIAL else "ZM")
+        except HTTPException:
+            ph = ""
+        if ph and not session.exec(select(User).where(User.phone == ph, User.id != user.id)).first():
+            user.phone = ph; changed["phone"] = True
+    session.add(user); session.commit()
+    return {"full_name": user.full_name, "phone": user.phone, "saved": list(changed)}
 
 
 @router.get("/change")

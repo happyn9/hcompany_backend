@@ -107,3 +107,35 @@ def test_service_ledger(c):
     c.st["as"] = "boss"
     rev = c.get(f"{M}/admin/service-revenue")
     assert rev.status_code == 200 and {r["service"] for r in rev.json()} >= {"lodge", "shopping"}
+
+
+def test_find_clients_masked_and_targeted_invoice(c):
+    c.st["as"] = "seller"
+    assert c.get(f"{M}/invoices/clients", params={"q": "bu"}).json() == []  # trop court
+    r = c.get(f"{M}/invoices/clients", params={"q": "buyer"}).json()
+    assert len(r) == 1 and r[0]["name"] == "Buyer" and "buyer@inv.test" not in str(r) and "•" in r[0]["email"]
+    inv = c.post(f"{M}/invoices", json=body(client_email="", client_name="", client_user_id=r[0]["id"], client_country="CD", receive_operator="mtn")).json()
+    assert inv["client_email"] == "buyer@inv.test"
+    c.st["as"] = "buyer"
+    assert any(i["code"] == inv["code"] and i["role"] == "client" for i in c.get(f"{M}/invoices").json())
+
+
+def test_cd_operators_same_fees_and_no_cdf(c):
+    cor = c.get(f"{M}/corridors").json()
+    assert [o["key"] for o in cor["operators"]["CD"]] == ["airtel", "orange"]
+    assert not any(o["cheapest_receive"] for o in cor["operators"]["CD"])
+    assert {o["key"] for o in cor["operators"]["ZM"] if o["receive"]} == {"mtn", "airtel", "zamtel"}
+    a = c.get(f"{M}/quote", params={"amount": 50, "from": "ZM", "to": "CD", "ben_op": "airtel"}).json()
+    o = c.get(f"{M}/quote", params={"amount": 50, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()
+    assert a["fee"] == o["fee"] and a["receive_amount"] == o["receive_amount"]
+    assert c.get(f"{M}/change", params={"amount": 10, "from": "USD", "to": "CDF"}).status_code == 422
+
+
+def test_profile_first_transaction_only_fills_empty(c):
+    with Session(engine) as s:
+        u = User(email="fresh@inv.test", is_verified=True); s.add(u); s.commit(); s.refresh(u); c.st["ids"]["fresh"] = u.id
+    c.st["as"] = "fresh"
+    r = c.post(f"{M}/profile", json={"full_name": "Fresh Client", "phone": "0971234599", "country": "ZM"}).json()
+    assert r["full_name"] == "Fresh Client" and r["phone"] == "+260971234599"
+    r2 = c.post(f"{M}/profile", json={"full_name": "Autre", "phone": "0977777777", "country": "ZM"}).json()
+    assert r2["full_name"] == "Fresh Client" and r2["phone"] == "+260971234599"

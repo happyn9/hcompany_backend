@@ -296,6 +296,8 @@ def admin_operators(session: Session = Depends(get_session), admin: User = Depen
     """Grille de coûts de l'agrégateur par opérateur et sens, + simulation de marge sur un envoi type."""
     out = []
     for f in sorted(P.all_fees(session).values(), key=lambda x: (x.country, x.direction, x.operator)):
+        if f.operator not in svc.OPERATORS.get(f.country, {}):
+            continue  # opérateur retiré de l'offre (ex. M-Pesa, Africell)
         out.append({"country": f.country, "operator": f.operator, "label": svc.OPERATORS[f.country][f.operator], "direction": f.direction, "enabled": f.enabled,
                     "pct": f.pct, "tiers": f.tiers, "confirmed": f.confirmed, "note": f.note, "code": P.PAWAPAY_CODES.get((f.country, f.operator))})
     return out

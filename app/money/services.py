@@ -21,7 +21,7 @@ REQUEST_TTL_DAYS = 7
 CORRIDOR = {"ZM", "CD"}
 OPERATORS = {
     "ZM": {"mtn": "MTN MoMo", "airtel": "Airtel Money", "zamtel": "Zamtel Kwacha"},
-    "CD": {"mpesa": "M-Pesa", "airtel": "Airtel Money", "orange": "Orange Money", "africell": "Africell Money"},
+    "CD": {"airtel": "Airtel Money", "orange": "Orange Money"},
 }
 
 
@@ -222,7 +222,7 @@ def usd_of(session: Session, amount: float, currency: str) -> float:
     return _usd(session, amount, currency)
 
 
-CHANGE_CURRENCIES = ("USD", "ZMW", "CDF")
+CHANGE_CURRENCIES = ("USD", "ZMW")
 
 
 def currency_of(session: Session, country: str) -> str:
@@ -233,7 +233,7 @@ def change_quote(session: Session, amount: float, source: str, target: str) -> d
     """Devis de change : taux du marché moins la marge H-Money de la devise reçue (le dollar n'a pas de marge)."""
     s, t = source.upper(), target.upper()
     if s not in CHANGE_CURRENCIES or t not in CHANGE_CURRENCIES or s == t or "USD" not in (s, t):
-        raise HTTPException(status_code=422, detail="Le change se fait entre le dollar (USD) et le kwacha (ZMW) ou le franc congolais (CDF).")
+        raise HTTPException(status_code=422, detail="Le change se fait entre le dollar (USD) et le kwacha (ZMW).")
     rs = geo.rate_of(session, s) if s != "USD" else None
     rt = geo.rate_of(session, t) if t != "USD" else None
     per_s, per_t = (rs.per_usd if rs else 1.0), (rt.per_usd if rt else 1.0)

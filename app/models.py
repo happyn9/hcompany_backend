@@ -388,6 +388,15 @@ class UserProfile(SQLModel, table=True):
     company_size: Optional[str] = None  # "solo" | "small" | "medium" | "large"
     primary_interest: Optional[str] = None  # ex: "Cybersécurité", "Formation"...
     referral_source: Optional[str] = None
+    # Onboarding pro : qui est la personne, où, pourquoi elle vient
+    account_type: Optional[str] = None  # "individual" | "business"
+    company_name: Optional[str] = None
+    country: Optional[str] = None  # ISO-2
+    city: Optional[str] = None
+    language: Optional[str] = None  # fr | en
+    interests: Optional[str] = None  # services choisis, séparés par des virgules
+    purpose: Optional[str] = None  # send_money | invoice | stay | travel | shop | learn | sell | other (virgules)
+    wants_partner: bool = False
     completed_at: datetime = Field(default_factory=datetime.utcnow)
 
 

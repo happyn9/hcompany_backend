@@ -49,7 +49,7 @@ def test_corridors_and_quote(c):
     assert r["simulated"] is True and r["currencies"] == {"ZM": "ZMW", "CD": "USD"}
     q = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD"}).json()
     assert q["send_currency"] == "ZMW" and q["receive_currency"] == "USD" and q["receive_amount"] == 20.0  # 500 ZMW / 25
-    assert q["fee"] == 16.67 and q["total_paid"] == 516.67  # 3 % de base, relevé pour couvrir l'agrégateur + 1 % de marge nette
+    assert q["fee"] == 22.53 and q["total_paid"] == 522.53  # opérateur congolais par défaut (Airtel = Orange, même tarif) + 1 % de marge nette
     # mode « il doit recevoir 20 USD » : on retrouve 500 ZMW
     q2 = c.get(f"{M}/quote", params={"amount": 20, "from": "ZM", "to": "CD", "mode": "receive"}).json()
     assert q2["send_amount"] == 500.0 and q2["receive_amount"] == 20.0
@@ -73,7 +73,7 @@ def test_send_completes(c):
     r = c.post(f"{M}/transfers", json=send_body())
     assert r.status_code == 201, r.text
     t = r.json()
-    assert t["status"] == "under_review" and t["receive_amount"] == 20.0 and t["total_paid"] == 516.67 and t["role"] == "payer"  # argent gardé, en attente de contrôle
+    assert t["status"] == "under_review" and t["receive_amount"] == 20.0 and t["total_paid"] == 522.53 and t["role"] == "payer"  # argent gardé, en attente de contrôle
     assert review(t["code"]) == "completed"
     assert t["counterpart_phone"] == "243812345678" and t["simulated"] is True
     assert c.post(f"{M}/transfers", json=send_body(beneficiary_operator="zamtel")).status_code == 422  # opérateur d'un autre pays
@@ -163,7 +163,7 @@ def test_send_and_withdraw_rates_per_direction(c):
 def test_fee_included_or_deducted(c):
     """Case « avec frais » : cochée, les frais s'ajoutent ; décochée, ils sont retirés du montant saisi."""
     added = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "true"}).json()
-    assert added["total_paid"] == 516.67 and added["receive_amount"] == 20.0 and added["fee_mode"] == "added"
+    assert added["total_paid"] == 522.53 and added["receive_amount"] == 20.0 and added["fee_mode"] == "added"
     ded = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "false"}).json()
     assert ded["total_paid"] == 500.0 and ded["fee_mode"] == "deducted" and ded["fee"] >= 15.0
     assert ded["send_amount"] == round(500 - ded["fee"], 2) and ded["receive_amount"] == round(ded["send_amount"] / 25, 1) - (0 if round(ded["send_amount"] / 25, 2) == round(ded["send_amount"] / 25, 1) else 0) or abs(ded["receive_amount"] - ded["send_amount"] / 25) < 0.05
@@ -208,23 +208,21 @@ def test_operator_pricing_never_loses_money(c):
                 # sens inverse : le payeur est au Congo, le bénéficiaire en Zambie (Airtel seulement)
                 q = svc.quote_send(s, "CD", "ZM", amount / 20, with_fee, "orange", "airtel")
                 assert q["fee"] - q["provider_cost"] >= q["send_amount"] * 1.0 / 100 - 0.5, (amount, q)
-        # Orange (1 %) reste moins cher que Airtel (2,16 %) pour le bénéficiaire congolais
+        # Orange et Airtel (RDC) : exactement les mêmes frais, aucun opérateur n'est favorisé
         o, a = svc.quote_send(s, "ZM", "CD", 500, True, "airtel", "orange"), svc.quote_send(s, "ZM", "CD", 500, True, "airtel", "airtel")
-        assert o["fee"] < a["fee"]
+        assert o["fee"] == a["fee"] and o["receive_amount"] == a["receive_amount"]
         assert P.cost_local(P.get_fee(s, "ZM", "airtel", "in"), 100) == 0.5 + 1.0   # < 150,01 ZMW : 0,5 + 1 %
         assert P.cost_local(P.get_fee(s, "ZM", "airtel", "in"), 6000) == 5.5 + 60.0  # > 5 000,01 ZMW : 5,5 + 1 %
 
 
 def test_operator_availability_and_compare(c):
     r = c.get(f"{M}/corridors").json()["operators"]
-    assert [o["key"] for o in r["ZM"] if o["receive"]] == ["airtel"]            # en Zambie on ne reçoit que sur Airtel
+    assert {o["key"] for o in r["ZM"] if o["receive"]} == {"mtn", "airtel", "zamtel"}  # Zambie : MTN, Airtel, Zamtel
     assert {o["key"] for o in r["CD"] if o["receive"]} == {"orange", "airtel"}
-    assert [o["key"] for o in r["CD"] if o["cheapest_receive"]] == ["orange"]
-    # Zambie : MTN / Zamtel ne peuvent pas recevoir
-    assert c.post(f"{M}/transfers", json=send_body(from_country="CD", to_country="ZM", beneficiary_operator="mtn", beneficiary_phone="0961112233",
-                                                   pay_operator="orange", pay_phone="0812345678", amount=20000)).status_code == 422
+    assert [o["key"] for o in r["CD"] if o["cheapest_receive"]] == []  # mêmes frais : pas de « moins cher »
+    assert set(r["CD"][i]["key"] for i in range(len(r["CD"]))) == {"airtel", "orange"}  # M-Pesa / Africell ne sont plus proposés
     cmp = c.get(f"{M}/quote/compare", params={"amount": 500, "from": "ZM", "to": "CD"}).json()
-    assert [x["operator"] for x in cmp] == ["orange", "airtel"] and cmp[0]["receive_amount"] >= cmp[1]["receive_amount"]
+    assert [x["operator"] for x in cmp] == ["airtel", "orange"] and cmp[0]["receive_amount"] == cmp[1]["receive_amount"]
     assert "provider_cost" not in c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD"}).json()
 
 

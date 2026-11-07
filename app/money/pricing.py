@@ -37,13 +37,11 @@ DEFAULTS = [
     _d("ZM", "mtn", "in", True, 1.0, ZM_IN_TIERS), _d("ZM", "airtel", "in", True, 1.0, ZM_IN_TIERS), _d("ZM", "zamtel", "in", True, 1.0, ZM_IN_TIERS),
     # Zambie — versement : seulement Airtel (tarif pawaPay) ; la grille de versement zambienne n'a pas été fournie : 1 % pawaPay supposé
     _d("ZM", "airtel", "out", True, 1.0, confirmed=False, note="Grille de versement Zambie à confirmer"),
-    _d("ZM", "mtn", "out", False, 1.0, confirmed=False), _d("ZM", "zamtel", "out", False, 1.0, confirmed=False),
-    # RD Congo — encaissement : Orange 3 % (2 % opérateur + 1 % pawaPay), Airtel 3,2 % (2,2 % + 1 %)
-    _d("CD", "orange", "in", True, 3.0), _d("CD", "airtel", "in", True, 3.2),
-    _d("CD", "mpesa", "in", False, 3.2, confirmed=False, note="Pas de grille fournie"), _d("CD", "africell", "in", False, 3.2, confirmed=False, note="Pas de grille fournie"),
+    _d("ZM", "mtn", "out", True, 1.0, confirmed=False, note="Grille de versement Zambie à confirmer"), _d("ZM", "zamtel", "out", True, 1.0, confirmed=False, note="Grille de versement Zambie à confirmer"),
+    # RD Congo — Airtel et Orange au MÊME tarif (le plus élevé des deux : on ne favorise aucun opérateur et on ne perd rien)
+    _d("CD", "orange", "in", True, 3.2), _d("CD", "airtel", "in", True, 3.2),
     # RD Congo — versement : Orange 1 % (pawaPay seul), Airtel 2,16 % (1,16 % + 1 %)
-    _d("CD", "orange", "out", True, 1.0), _d("CD", "airtel", "out", True, 2.16),
-    _d("CD", "mpesa", "out", False, 2.16, confirmed=False, note="Pas de grille fournie"), _d("CD", "africell", "out", False, 2.16, confirmed=False, note="Pas de grille fournie"),
+    _d("CD", "orange", "out", True, 2.16), _d("CD", "airtel", "out", True, 2.16),
 ]
 _BY = {(f.country, f.operator, f.direction): f for f in DEFAULTS}
 

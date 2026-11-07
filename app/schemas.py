@@ -455,10 +455,23 @@ class ContactAdminReply(BaseModel):
 
 # --- Onboarding ---
 
+ONBOARDING_SERVICES = {"money", "invoice", "logement", "transport", "colis", "shopping", "restaurant", "tourisme", "learning", "translate"}
+ONBOARDING_PURPOSES = {"send_money", "invoice", "stay", "travel", "shop", "learn", "sell", "other"}
+
+
 class OnboardingSubmit(BaseModel):
-    company_size: Optional[str] = None
-    primary_interest: Optional[str] = None
-    referral_source: Optional[str] = None
+    company_size: Optional[str] = Field(default=None, max_length=20)
+    primary_interest: Optional[str] = Field(default=None, max_length=80)
+    referral_source: Optional[str] = Field(default=None, max_length=80)
+    account_type: Optional[str] = Field(default=None, pattern="^(individual|business)$")
+    company_name: Optional[str] = Field(default=None, max_length=120)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    city: Optional[str] = Field(default=None, max_length=80)
+    phone: Optional[str] = Field(default=None, max_length=24)
+    language: Optional[str] = Field(default=None, pattern="^(fr|en)$")
+    interests: list[str] = Field(default_factory=list, max_length=12)
+    purposes: list[str] = Field(default_factory=list, max_length=8)
+    wants_partner: bool = False
 
 
 class OnboardingSuggestion(BaseModel):
@@ -472,6 +485,14 @@ class OnboardingRead(BaseModel):
     completed: bool
     company_size: Optional[str] = None
     primary_interest: Optional[str] = None
+    account_type: Optional[str] = None
+    company_name: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    language: Optional[str] = None
+    interests: list[str] = []
+    purposes: list[str] = []
+    wants_partner: bool = False
     suggestions: list[OnboardingSuggestion] = []
 
 

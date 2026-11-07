@@ -169,7 +169,7 @@ def test_operator_fees_admin(c):
     tok = c.post("/api/v1/admin-security/confirm", json={"password": "motdepasse1"}).json()["confirm_token"]
     c.headers["X-Admin-Confirm"] = tok
     rows = c.get(f"{A}/operators").json()
-    assert any(r["operator"] == "orange" and r["direction"] == "out" and r["pct"] == 1.0 and r["confirmed"] for r in rows)
+    assert any(r["operator"] == "orange" and r["direction"] == "out" and r["pct"] == 2.16 and r["confirmed"] for r in rows)
     assert any(r["operator"] == "airtel" and r["country"] == "ZM" and r["direction"] == "out" and not r["confirmed"] for r in rows)  # hypothèse signalée
     base = c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()["fee"]
     # l'agrégateur augmente le tarif Orange (versement) à 5 % : les frais suivent, la marge reste protégée
