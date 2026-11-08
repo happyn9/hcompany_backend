@@ -1,0 +1,61 @@
+// Textes d'interface du chatbot Avila (accueil, menu, libellés).
+// Les réponses elles-mêmes viennent du moteur local : i18n/chatbotEngine.js
+// (aucune IA, aucun appel réseau).
+export const CHATBOT = {
+  fr: {
+    greeting: "Bonjour 👋 Je m'appelle Avila. Posez-moi vos questions sur H-Company : services, tarifs, réservation, colis, compte, partenaires… ou choisissez un sujet dans le menu ☰.",
+    fallback: "Je n'arrive pas à répondre pour le moment. Le plus simple est de nous écrire via le formulaire « Rejoindre le réseau », on vous répond vite.",
+    error: "Petit souci de connexion de mon côté. Voici ce que je peux vous dire :",
+    rateLimited: "Vous m'avez envoyé beaucoup de messages d'un coup 😅 Réessayez dans quelques minutes.",
+    goToForm: "Aller au formulaire",
+    restart: "Nouvelle conversation",
+    typing: "Avila écrit…",
+    inputPlaceholder: "Posez votre question…",
+    menu: [
+      { key: "services", label: "Vos services", q: "Quels sont vos services ?" },
+      { key: "pricing", label: "Vos tarifs", q: "Quels sont vos tarifs ?" },
+      { key: "bus", label: "Réserver un bus", q: "Comment réserver un bus ?" },
+      { key: "colis", label: "Envoyer un colis", q: "Comment envoyer un colis ?" },
+      { key: "account", label: "Créer un compte", q: "Comment créer un compte ?" },
+      { key: "join", label: "Devenir partenaire", q: "Comment devenir partenaire ?" },
+      { key: "contact", label: "Parler à quelqu'un", q: "Comment contacter l'équipe ?" },
+    ],
+    answers: {
+      services: "Nous couvrons cinq métiers : cybersécurité, développement web & mobile, design, infrastructure IT et maintenance. Vous pouvez tout voir dans la section Services plus haut sur la page.",
+      pricing: "Trois formules mensuelles : Starter à 150 $, Pro à 450 $ (la plus choisie), et Entreprise à 1200 $. Sans engagement de durée.",
+      partners: "Notre réseau compte aujourd'hui Lukondo (transport, colis, lodge, argent), Confismila (restaurant), H-learning (formation) et U-Study (app mobile). Chacun a son propre espace.",
+      join: "Pour une agence, l'outil est gratuit : nous prenons seulement une commission sur les nouveaux clients que nous vous apportons, sans coût ni engagement. Remplissez le formulaire « Rejoindre le réseau » pour candidater.",
+      learning: "H-learning : toutes les vidéos de notre chaîne YouTube se suivent gratuitement sur le site. Pour aller plus loin (formation en présentiel, cours exclusifs, équipe), il y a les bouquets Individuel, Pro et Équipe.",
+      contact: "Le plus rapide : remplissez le formulaire « Rejoindre le réseau » en bas de page, un membre de l'équipe revient vers vous rapidement.",
+    },
+    ctaKeys: ["contact", "join"],
+  },
+  en: {
+    greeting: "Hi 👋 I'm Avila. Ask me about H-Company: services, pricing, booking, parcels, your account, partners… or pick a topic from the ☰ menu.",
+    fallback: "I can't answer right now. The quickest way is to write to us via the \"Join the network\" form, we reply fast.",
+    error: "I'm having a small connection issue. Here's what I can tell you:",
+    rateLimited: "That's a lot of messages at once 😅 Please try again in a few minutes.",
+    goToForm: "Go to the form",
+    restart: "New conversation",
+    typing: "Avila is typing…",
+    inputPlaceholder: "Ask your question…",
+    menu: [
+      { key: "services", label: "Your services", q: "What are your services?" },
+      { key: "pricing", label: "Your pricing", q: "What are your prices?" },
+      { key: "bus", label: "Book a bus", q: "How do I book a bus?" },
+      { key: "colis", label: "Send a parcel", q: "How do I send a parcel?" },
+      { key: "account", label: "Create an account", q: "How do I create an account?" },
+      { key: "join", label: "Become a partner", q: "How do I become a partner?" },
+      { key: "contact", label: "Talk to someone", q: "How do I contact the team?" },
+    ],
+    answers: {
+      services: "We cover five trades: cybersecurity, web & mobile development, design, IT infrastructure and maintenance. You can see everything in the Services section above.",
+      pricing: "Three monthly plans: Starter at $150, Pro at $450 (most popular), and Enterprise at $1200. No long-term commitment.",
+      partners: "Our network currently includes Lukondo (transport, parcels, lodging, money transfer), Confismila (restaurant), H-learning (training) and U-Study (mobile app). Each has its own space.",
+      join: "For agencies the tool is free: we only take a commission on new clients we bring you, with no cost or commitment. Fill in the \"Join the network\" form to apply.",
+      learning: "H-learning: every video from our YouTube channel is free to watch on the site. To go further (in-person training, exclusive courses, teams), there are Individual, Pro and Team plans.",
+      contact: "Fastest way: fill in the \"Join the network\" form at the bottom of the page, a team member will get back to you quickly.",
+    },
+    ctaKeys: ["contact", "join"],
+  },
+};

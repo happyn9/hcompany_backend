@@ -1,26 +1,17 @@
-FROM python:3.12-slim
-
+# --- Étape 1 : build ---
+FROM node:20-slim AS build
 WORKDIR /app
-
-# psycopg2-binary a besoin de libpq au runtime ; gcc pour compiler certaines
-# dépendances natives (bcrypt, etc.) si aucune wheel précompilée n'est dispo.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir --default-timeout=100 --retries 5 -r requirements.txt
-
+COPY package*.json ./
+RUN npm ci
 COPY . .
-RUN chmod +x entrypoint.sh
+# VITE_API_URL est injectée au build (les variables VITE_* sont figées dans
+# le bundle JS, contrairement aux variables lues côté serveur).
+ARG VITE_API_URL=http://localhost:8000
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
 
-# Utilisateur non-root : bonne pratique, réduit la surface d'attaque du conteneur.
-RUN useradd --create-home appuser && chown -R appuser /app
-USER appuser
-
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-CMD ["./entrypoint.sh"]
+# --- Étape 2 : service statique ---
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
