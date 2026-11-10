@@ -36,6 +36,9 @@ OPERATORS = {
     "CD": {"airtel": "Airtel Money", "orange": "Orange Money"},
 }
 
+import logging
+log = logging.getLogger(__name__)
+
 
 DIAL = {"ZM": "260", "CD": "243"}
 
@@ -184,6 +187,10 @@ def _finish(session: Session, frm: str, to: str, q: dict, pay_op: str, ben_op: s
     cost = _provider_cost(session, frm, to, pay_op, ben_op, q)
     net = net_estimate(q, cost)
     if net < 0:
+        # Détail réservé aux journaux serveur (Render) : aide l'admin à voir pourquoi un trajet est refusé. Aucune donnée personnelle.
+        log.warning("money.margin_guard refus %s>%s dir=%s pay_op=%s ben_op=%s S=%s R=%s F=%s M=%s cout_agregateur=%s net=%s taux_impose=%s",
+                    frm.upper(), to.upper(), q["direction"], pay_op, ben_op, q["S"], q["R"], q["F"], q["M"], cost, net,
+                    (override_rate(session, frm, to, "send"), override_rate(session, frm, to, "withdraw")))
         raise HTTPException(status_code=422, detail="Ce montant n'est pas disponible avec cette combinaison d'opérateurs pour le moment.")
     target = E.d(get_settings(session)["target_margin_pct"]) / 100
     q.update({"from_country": frm.upper(), "to_country": to.upper(), "pay_operator": pay_op, "receive_operator": ben_op, "provider_cost": cost, "net": net,
