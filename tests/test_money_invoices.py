@@ -1,3 +1,4 @@
+from tests.idem_helper import with_idem
 """Factures H-Money (émission, paiement domestique et transfrontalier, annulation) + registre des services."""
 import os
 import tempfile
@@ -33,6 +34,7 @@ def c():
             return s.get(User, ids[st["as"]])
     app.dependency_overrides[get_current_user] = cur
     with TestClient(app) as client:
+        with_idem(client)
         client.st = st
         yield client
     app.dependency_overrides.clear()

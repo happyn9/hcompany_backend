@@ -251,11 +251,16 @@ def admin_set_corridor_rate(payload: CorridorRateIn, session: Session = Depends(
 
 class SettingsIn(BaseModel):
     fee_pct: float = Field(ge=0, le=20)
+    fee_pct_cz: float = Field(default=4.0, ge=0, le=20)
+    margin_zc_pct: float = Field(default=1.5, ge=0, le=10)
+    margin_cz_pct: float = Field(default=1.5, ge=0, le=10)
+    min_fee_zmw: float = Field(default=10.0, ge=0, le=1000)
     target_margin_pct: float = Field(default=1.0, ge=0, le=20)
     min_fee_usd: float = Field(ge=0, le=50)
     min_usd: float = Field(ge=0.5, le=1000)
     max_usd: float = Field(ge=1, le=100000)
     daily_max_usd: float = Field(ge=1, le=1000000)
+    review_all: bool = True
 
 
 @admin_router.get("/settings")
@@ -371,3 +376,68 @@ def agent_review(code: str, payload: ReviewDecision, session: Session = Depends(
     if not mine:
         raise HTTPException(status_code=403, detail="Vous n'avez pas le droit de contrôler les transactions.")
     return _decide(session, user, code, payload, mine)
+
+
+# --- Grand livre, réserves locales, rapprochement ----------------------------------------------------
+
+@admin_router.get("/ledger")
+def admin_ledger(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    """Balance du grand livre (équilibre par devise) + réserves : solde fournisseur, fonds dus, réserve bloquée, disponible, seuil de pause. Montants en unités mineures."""
+    from app.money import ledger as L
+    tb = L.trial_balance(session)
+    res = {c: {"provider_balance": L.balance(session, f"PRV_{c}"), "due": -L.balance(session, f"DUE_{c}"), "holds": L.active_holds(session, c),
+               "available": L.available(session, c), "floor": L.floor_of(session, c)} for c in ("ZMW", "USD")}
+    return {"balanced": tb["balanced"], "totals": tb["totals"], "accounts": tb["accounts"], "reserves": res,
+            "note": "La nature juridique du solde fournisseur (compte marchand, séquestre…) reste à qualifier avec le fournisseur."}
+
+
+class ReserveMove(BaseModel):
+    currency: str = Field(pattern="^(ZMW|USD)$")
+    amount: float = Field(description="positif = apport de réserve, négatif = retrait (jamais au-delà du disponible)")
+    memo: str = Field(default="", max_length=200)
+
+
+@admin_router.post("/reserves")
+def admin_reserve_move(payload: ReserveMove, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    from app.money import engine as E, ledger as L
+    minor = E.to_minor(E.d(payload.amount))
+    if minor < 0 and -minor > L.available(session, payload.currency):
+        raise HTTPException(status_code=422, detail="Retrait supérieur au disponible (les fonds dus et la réserve bloquée sont intouchables).")
+    L.post_reserve(session, payload.currency, minor, admin.id, payload.memo)
+    audit(session, admin, "reserve_move", payload.currency, f"{payload.amount} {payload.memo}")
+    session.commit()
+    return admin_ledger(session, admin)
+
+
+class ReserveFloor(BaseModel):
+    currency: str = Field(pattern="^(ZMW|USD)$")
+    floor: float = Field(ge=0)
+
+
+@admin_router.put("/reserves/floor")
+def admin_reserve_floor(payload: ReserveFloor, session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    from app.money import engine as E
+    from app.money.models import MoneyReserve
+    r = session.get(MoneyReserve, payload.currency) or MoneyReserve(currency=payload.currency)
+    r.floor_minor, r.updated_by, r.updated_at = E.to_minor(E.d(payload.floor)), admin.id, datetime.utcnow()
+    session.add(r); audit(session, admin, "reserve_floor", payload.currency, str(payload.floor)); session.commit()
+    return admin_ledger(session, admin)
+
+
+@admin_router.get("/to-verify")
+def admin_to_verify(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    """Opérations dont le statut chez le fournisseur est inconnu ou en attente : à vérifier (aucune n'est remboursée ni rejouée automatiquement)."""
+    rows = session.exec(select(MoneyTransfer).where(MoneyTransfer.status.in_(("collecting", "payout_pending", "refund_pending")))).all()
+    return {"count": len(rows), "items": [{**_tx_admin(t), "verify_needed": t.verify_needed} for t in rows]}
+
+
+@admin_router.post("/reconcile")
+def admin_reconcile(session: Session = Depends(get_session), admin: User = Depends(require_admin_confirmed)):
+    """Interroge le fournisseur pour chaque opération en attente et applique ce qu'il confirme (même chemin que le webhook)."""
+    from app.money import flow
+    rows = session.exec(select(MoneyTransfer).where(MoneyTransfer.status.in_(("collecting", "payout_pending", "refund_pending")))).all()
+    for t in rows:
+        flow.sync_transfer(session, t)
+    audit(session, admin, "reconcile", "", f"{len(rows)} opérations")
+    session.commit()
+    return {"checked": len(rows), "still_open": sum(1 for t in rows if t.status in ("collecting", "payout_pending", "refund_pending"))}

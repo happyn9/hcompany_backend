@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     money_provider: str = "simulated"  # simulated | pawapay
     pawapay_api_token: str = ""  # jeton API pawaPay (bearer) — sandbox ou production
     pawapay_base_url: str = "https://api.sandbox.pawapay.io"  # production : https://api.pawapay.io
-    pawapay_poll_seconds: int = 90  # attente max de l'approbation du payeur (en production : passer aux callbacks)
+    pawapay_poll_seconds: int = 0  # attente facultative dans la requête (0 = aucune : le webhook et la vérification font foi)
+    money_webhook_secret: str = ""  # secret HMAC partagé pour authentifier les webhooks du fournisseur (jamais dans le code ni le dépôt)
     allowed_origins: str = "http://localhost:5173,http://localhost:4173"
 
     # --- OTP ---

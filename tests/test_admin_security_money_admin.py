@@ -1,3 +1,4 @@
+from tests.idem_helper import with_idem
 """Verrou « mot de passe » de l'admin + agents H-Money par pays."""
 import os
 import tempfile
@@ -25,6 +26,7 @@ G = "/api/v1/money/agent"
 def c():
     SQLModel.metadata.create_all(engine)
     with TestClient(app) as client:
+        with_idem(client)
         client.post("/api/v1/auth/register", json={"email": "boss@adm.example.com", "password": "motdepasse1", "full_name": "Boss"})
         client.post("/api/v1/auth/register", json={"email": "agent@adm.example.com", "password": "motdepasse1", "full_name": "Agent CD"})
         client.post("/api/v1/auth/register", json={"email": "client@adm.example.com", "password": "motdepasse1", "full_name": "Client"})
@@ -113,10 +115,16 @@ def test_admin_confirm_by_email_code(c, monkeypatch):
 
 def _tx(code, frm="ZM", to="CD"):
     from app.money.models import MoneyTransfer
+    from app.money import ledger
+    from app.money.models import MoneyProviderOp
     with Session(engine) as s:
-        s.add(MoneyTransfer(code=code, kind="send", user_id=1, payer_user_id=1, from_country=frm, to_country=to, send_currency="ZMW", send_amount=500,
-                            fee=15, total_paid=515, receive_currency="USD", receive_amount=20, rate=0.04, counterpart_name="Jean",
-                            counterpart_phone="243812345678", counterpart_operator="orange", status="under_review", provider_ref="SIM-IN-X"))
+        t = MoneyTransfer(code=code, kind="send", user_id=1, payer_user_id=1, from_country=frm, to_country=to, send_currency="ZMW" if frm == "ZM" else "USD", send_amount=500,
+                          fee=15, total_paid=515, send_minor=50000, fee_minor=1500, total_minor=51500, receive_minor=1970, receive_currency="USD" if to == "CD" else "ZMW",
+                          receive_amount=19.7, rate=0.04, counterpart_name="Jean", counterpart_phone="243812345678", counterpart_operator="orange", pay_operator="mtn",
+                          status="under_review", provider_ref="SIM-IN-X")
+        s.add(t)
+        s.add(MoneyProviderOp(id=f"op-{code}", transfer_code=code, kind="collect", amount_minor=51500, currency=t.send_currency, status="completed"))
+        ledger.post_collection(s, t)  # collecte confirmée déjà écrite au grand livre, comme en vrai
         s.commit()
 
 
@@ -147,7 +155,7 @@ def test_fee_and_limits_settings(c):
     tok = c.post("/api/v1/admin-security/confirm", json={"password": "motdepasse1"}).json()["confirm_token"]
     c.headers["X-Admin-Confirm"] = tok
     assert c.get(f"{A}/settings").json()["fee_pct"] == 3.0
-    body = {"fee_pct": 5, "min_fee_usd": 0.1, "min_usd": 3, "max_usd": 500, "daily_max_usd": 900}
+    body = {"fee_pct": 5, "fee_pct_cz": 6, "margin_zc_pct": 1.5, "margin_cz_pct": 1.5, "min_fee_zmw": 2, "min_fee_usd": 0.1, "min_usd": 3, "max_usd": 500, "daily_max_usd": 900}
     assert c.put(f"{A}/settings", json={**body, "max_usd": 2}).status_code == 422       # min ≥ max
     assert c.put(f"{A}/settings", json={**body, "fee_pct": 90}).status_code == 422      # hors bornes
     assert c.put(f"{A}/settings", json={**body, "daily_max_usd": 100}).status_code == 422
@@ -155,13 +163,13 @@ def test_fee_and_limits_settings(c):
     cor = c.get("/api/v1/money/corridors").json()
     assert cor["fee_pct"] == 5 and cor["limits_usd"] == {"min": 3, "max": 500, "daily": 900}
     q = c.get("/api/v1/money/quote", params={"amount": 100, "from": "ZM", "to": "CD"}).json()
-    assert q["fee"] == 5.0                                                              # 5 % appliqué
+    assert q["fee"] == 5.0                                                              # 5 % appliqué (min 2 ZMW)
     assert c.get("/api/v1/money/quote", params={"amount": 1, "from": "ZM", "to": "CD"}).status_code == 422  # sous le nouveau minimum
     assert any(a["action"] == "settings" for a in c.get(f"{A}/audit").json())
     c.st["as"] = "client"
     assert c.put(f"{A}/settings", json=body).status_code == 403
     c.st["as"] = "boss"
-    c.put(f"{A}/settings", json={"fee_pct": 3, "min_fee_usd": 0.5, "min_usd": 2, "max_usd": 1000, "daily_max_usd": 2000})
+    c.put(f"{A}/settings", json={"fee_pct": 3, "fee_pct_cz": 4, "margin_zc_pct": 1.5, "margin_cz_pct": 1.5, "min_fee_zmw": 10, "min_fee_usd": 0.5, "min_usd": 2, "max_usd": 1000, "daily_max_usd": 2000})
 
 
 def test_operator_fees_admin(c):
@@ -171,10 +179,9 @@ def test_operator_fees_admin(c):
     rows = c.get(f"{A}/operators").json()
     assert any(r["operator"] == "orange" and r["direction"] == "out" and r["pct"] == 2.16 and r["confirmed"] for r in rows)
     assert any(r["operator"] == "airtel" and r["country"] == "ZM" and r["direction"] == "out" and not r["confirmed"] for r in rows)  # hypothèse signalée
-    base = c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()["fee"]
-    # l'agrégateur augmente le tarif Orange (versement) à 5 % : les frais suivent, la marge reste protégée
+    # l'agrégateur augmente le tarif Orange (versement) à 5 % : l'opération deviendrait déficitaire → elle est REFUSÉE (protection), pas vendue à perte
     assert c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "enabled": True, "pct": 5, "tiers": [], "confirmed": True}).status_code == 200
-    assert c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).json()["fee"] > base
+    assert c.get("/api/v1/money/quote", params={"amount": 500, "from": "ZM", "to": "CD", "ben_op": "orange"}).status_code == 422
     # désactiver Orange : il n'est plus proposé
     c.put(f"{A}/operators", json={"country": "CD", "operator": "orange", "direction": "out", "enabled": False, "pct": 5, "tiers": [], "confirmed": True})
     assert [o["key"] for o in c.get("/api/v1/money/corridors").json()["operators"]["CD"] if o["receive"]] == ["airtel"]

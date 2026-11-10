@@ -416,3 +416,15 @@ def test_rent_listing_terms_visible_to_both(ctx):
     # validations par type
     assert ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="apartment", price_per_night=0, rent_per_month=0)).status_code == 422
     assert ctx.post(f"{API}/host/properties", json=prop_body(ctx, type="lodge", price_per_night=0)).status_code == 422
+
+
+def test_location_must_be_near_city(ctx):
+    as_(ctx, "host")
+    ok = ctx.post(f"{API}/host/properties", json=prop_body(ctx, city="Lusaka", latitude=-15.40, longitude=28.33))
+    assert ok.status_code == 201, ok.text
+    far = ctx.post(f"{API}/host/properties", json=prop_body(ctx, city="Lusaka", latitude=-4.44, longitude=15.27))  # Kinshasa
+    assert far.status_code == 422 and "km" in far.json()["detail"]
+    pid = ok.json()["id"]
+    assert ctx.put(f"{API}/host/properties/{pid}", json=prop_body(ctx, city="Lusaka", latitude=-17.84, longitude=25.85)).status_code == 422
+    # ville inconnue ou sans coordonnées : pas de contrôle
+    assert ctx.post(f"{API}/host/properties", json=prop_body(ctx, city="Ville Inconnue", latitude=1.0, longitude=1.0)).status_code == 201

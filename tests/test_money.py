@@ -1,3 +1,4 @@
+from tests.idem_helper import with_idem
 """H-Money : devis, envoi ZM→CD, demande CD→ZM, échecs et remboursement, limites."""
 import os
 import tempfile
@@ -32,6 +33,7 @@ def c():
             return s.get(User, ids[st["as"]])
     app.dependency_overrides[get_current_user] = cur
     with TestClient(app) as client:
+        with_idem(client)
         client.st = st
         yield client
     app.dependency_overrides.clear()
@@ -48,11 +50,11 @@ def test_corridors_and_quote(c):
     r = c.get(f"{M}/corridors").json()
     assert r["simulated"] is True and r["currencies"] == {"ZM": "ZMW", "CD": "USD"}
     q = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD"}).json()
-    assert q["send_currency"] == "ZMW" and q["receive_currency"] == "USD" and q["receive_amount"] == 20.0  # 500 ZMW / 25
-    assert q["fee"] == 22.53 and q["total_paid"] == 522.53  # opérateur congolais par défaut (Airtel = Orange, même tarif) + 1 % de marge nette
-    # mode « il doit recevoir 20 USD » : on retrouve 500 ZMW
+    assert q["send_currency"] == "ZMW" and q["receive_currency"] == "USD" and q["receive_amount"] == 19.7  # ⌊500 / 25,375⌋ : marge FX de 1,5 % dans le sens Zambie → RDC, arrondi vers le bas
+    assert q["fee"] == 15.0 and q["total_paid"] == 515.0 and q["client_rate"] == 25.375  # 3 % (min 10 ZMW), frais en supplément
+    # mode « il doit recevoir 20 USD » (type A) : il reçoit exactement 20, le payeur paie ⌈20 × 25,375⌉ = 507,50 + frais
     q2 = c.get(f"{M}/quote", params={"amount": 20, "from": "ZM", "to": "CD", "mode": "receive"}).json()
-    assert q2["send_amount"] == 500.0 and q2["receive_amount"] == 20.0
+    assert q2["send_amount"] == 507.5 and q2["receive_amount"] == 20.0 and q2["total_paid"] == 522.73
     assert c.get(f"{M}/quote", params={"amount": 5, "from": "ZM", "to": "ZM"}).status_code == 422
     assert c.get(f"{M}/quote", params={"amount": 1, "from": "ZM", "to": "CD"}).status_code == 422  # sous le minimum
     assert c.get(f"{M}/quote", params={"amount": 90000, "from": "ZM", "to": "CD"}).status_code == 422  # au-dessus du plafond
@@ -73,7 +75,7 @@ def test_send_completes(c):
     r = c.post(f"{M}/transfers", json=send_body())
     assert r.status_code == 201, r.text
     t = r.json()
-    assert t["status"] == "under_review" and t["receive_amount"] == 20.0 and t["total_paid"] == 522.53 and t["role"] == "payer"  # argent gardé, en attente de contrôle
+    assert t["status"] == "under_review" and t["receive_amount"] == 19.7 and t["total_paid"] == 515.0 and t["role"] == "payer"  # argent gardé, en attente de contrôle
     assert review(t["code"]) == "completed"
     assert t["counterpart_phone"] == "243812345678" and t["simulated"] is True
     assert c.post(f"{M}/transfers", json=send_body(beneficiary_operator="zamtel")).status_code == 422  # opérateur d'un autre pays
@@ -112,7 +114,7 @@ def test_request_flow(c):
     code = req["code"]
     c.st["as"] = "jean"
     v = c.get(f"{M}/requests/{code}").json()
-    assert v["asker_name"] == "Ana" and v["quote"]["send_currency"] == "USD" and v["quote"]["send_amount"] == 10.0 and v["quote"]["receive_amount"] == 250.0
+    assert v["asker_name"] == "Ana" and v["quote"]["send_currency"] == "USD" and v["quote"]["send_amount"] == 10.16 and v["quote"]["receive_amount"] == 250.0  # ⌈250 / 24,625⌉
     assert c.post(f"{M}/requests/{code}/pay", json={"pay_phone": "243819999999", "pay_operator": "mtn"}).status_code == 422  # opérateur zambien
     # paiement refusé : la demande reste ouverte
     assert c.post(f"{M}/requests/{code}/pay", json={"pay_phone": "243819999999", "pay_operator": "orange"}).status_code == 402
@@ -147,7 +149,7 @@ def test_send_and_withdraw_rates_per_direction(c):
         admin = s.exec(select(User)).first()
         base = svc.quote_send(s, "ZM", "CD", 100)
         m = svc.market_rate(s, "ZM", "CD")
-        _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", send_rate=m * 0.9, withdraw_rate=m * 1.1), 0.5)
+        _apply_corridor_rate(s, admin, CorridorRateIn(from_country="ZM", to_country="CD", send_rate=m * 0.9, withdraw_rate=m * 0.95), 0.5)
         q = svc.quote_send(s, "ZM", "CD", 100)
         assert q["receive_amount"] < base["receive_amount"]  # taux d'envoi plus bas : le bénéficiaire reçoit moins
         r = svc.quote_receive(s, "ZM", "CD", 10)
@@ -161,12 +163,12 @@ def test_send_and_withdraw_rates_per_direction(c):
 
 
 def test_fee_included_or_deducted(c):
-    """Case « avec frais » : cochée, les frais s'ajoutent ; décochée, ils sont retirés du montant saisi."""
+    """Case « avec frais » : cochée, les frais s'ajoutent ; décochée, ils sont retirés du montant saisi (total payé exact, sans écart d'un centime)."""
     added = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "true"}).json()
-    assert added["total_paid"] == 522.53 and added["receive_amount"] == 20.0 and added["fee_mode"] == "added"
+    assert added["total_paid"] == 515.0 and added["receive_amount"] == 19.7 and added["fee_mode"] == "added"
     ded = c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD", "with_fee": "false"}).json()
-    assert ded["total_paid"] == 500.0 and ded["fee_mode"] == "deducted" and ded["fee"] >= 15.0
-    assert ded["send_amount"] == round(500 - ded["fee"], 2) and ded["receive_amount"] == round(ded["send_amount"] / 25, 1) - (0 if round(ded["send_amount"] / 25, 2) == round(ded["send_amount"] / 25, 1) else 0) or abs(ded["receive_amount"] - ded["send_amount"] / 25) < 0.05
+    assert ded["total_paid"] == 500.0 and ded["fee_mode"] == "deducted"
+    assert round(ded["send_amount"] + ded["fee"], 2) == 500.0 and ded["fee"] == 14.57 and ded["receive_amount"] < added["receive_amount"]
     t = c.post(f"{M}/transfers", json=send_body(with_fee=False)).json()
     assert t["total_paid"] == 500.0 and t["receive_amount"] == ded["receive_amount"]
 
@@ -195,7 +197,7 @@ def test_fee_deducted_shows_beneficiary_less(c):
 
 
 def test_operator_pricing_never_loses_money(c):
-    """Pour chaque couple d'opérateurs et chaque montant, les frais couvrent le coût de l'agrégateur + la marge cible."""
+    """Pour chaque couple d'opérateurs et chaque montant, le résultat net estimé reste positif (sinon l'opération est refusée)."""
     from sqlmodel import Session
     from app.money import pricing as P, services as svc
     with Session(engine) as s:
@@ -203,11 +205,10 @@ def test_operator_pricing_never_loses_money(c):
             for with_fee in (True, False):
                 for pay in ("mtn", "airtel", "zamtel"):
                     for ben in ("orange", "airtel"):
-                        q = svc.quote_send(s, "ZM", "CD", amount, with_fee, pay, ben)
-                        assert q["fee"] - q["provider_cost"] >= q["send_amount"] * 1.0 / 100 - 0.02, (amount, with_fee, pay, ben, q)
-                # sens inverse : le payeur est au Congo, le bénéficiaire en Zambie (Airtel seulement)
-                q = svc.quote_send(s, "CD", "ZM", amount / 20, with_fee, "orange", "airtel")
-                assert q["fee"] - q["provider_cost"] >= q["send_amount"] * 1.0 / 100 - 0.5, (amount, q)
+                        q = svc.core_send(s, "ZM", "CD", amount, with_fee, pay, ben)
+                        assert q["net"] >= 0 and q["T"] == q["S"] + q["F"], (amount, with_fee, pay, ben)
+                q = svc.core_send(s, "CD", "ZM", amount / 20, with_fee, "orange", "airtel")  # sens inverse
+                assert q["net"] >= 0 and q["T"] == q["S"] + q["F"], (amount, q)
         # Orange et Airtel (RDC) : exactement les mêmes frais, aucun opérateur n'est favorisé
         o, a = svc.quote_send(s, "ZM", "CD", 500, True, "airtel", "orange"), svc.quote_send(s, "ZM", "CD", 500, True, "airtel", "airtel")
         assert o["fee"] == a["fee"] and o["receive_amount"] == a["receive_amount"]
@@ -226,7 +227,8 @@ def test_operator_availability_and_compare(c):
     assert "provider_cost" not in c.get(f"{M}/quote", params={"amount": 500, "from": "ZM", "to": "CD"}).json()
 
 
-def test_pawapay_adapter_with_fake_server():
+def test_pawapay_adapter_with_fake_server(c):
+    """Adaptateur pawaPay contre un FAUX serveur HTTP (aucun appel réel) : initiation → « pending », jamais « failed » sur une réponse illisible, check() mappe les statuts."""
     import httpx
     from app.money.provider import PawaPayProvider
     calls = []
@@ -238,22 +240,34 @@ def test_pawapay_adapter_with_fake_server():
             import json as j
             b = j.loads(req.content)
             if req.url.path == "/v2/deposits" and b["amount"] == "100.00":
-                assert b["currency"] == "ZMW" and b["payer"]["accountDetails"] == {"phoneNumber": "260961112233", "provider": "AIRTEL_OAPI_ZMB"}
+                assert b["currency"] == "ZMW" and b["payer"]["accountDetails"] == {"phoneNumber": "260961112233", "provider": "AIRTEL_OAPI_ZMB"} and b["depositId"] == "dep-1"
             if req.url.path == "/v2/payouts":
-                assert b["recipient"]["accountDetails"]["provider"] == "ORANGE_COD"
+                assert b["recipient"]["accountDetails"]["provider"] == "ORANGE_COD" and b["payoutId"] == "pay-1"
             if b.get("amount") == "13.00":
                 return httpx.Response(200, json={"status": "REJECTED", "failureReason": {"failureCode": "PAYER_NOT_FOUND"}})
+            if b.get("amount") == "14.00":
+                return httpx.Response(200, text="<html>erreur</html>")
             return httpx.Response(200, json={"status": "ACCEPTED"})
-        return httpx.Response(200, json={"status": "FOUND", "data": {"status": "COMPLETED" if "deposits" in req.url.path else "FAILED", "failureReason": {"failureCode": "RECIPIENT_NOT_FOUND"}}})
+        st = {"dep-1": "COMPLETED", "pay-1": "FAILED", "dep-q": "PROCESSING", "dep-r": "IN_RECONCILIATION"}.get(req.url.path.rsplit("/", 1)[1])
+        if st is None:
+            return httpx.Response(200, json={"status": "NOT_FOUND"})
+        return httpx.Response(200, json={"status": "FOUND", "data": {"status": st, "failureReason": {"failureCode": "RECIPIENT_NOT_FOUND"}}})
 
-    p = PawaPayProvider("tok", "https://api.sandbox.pawapay.io", 3, transport=httpx.MockTransport(handler), sleep=lambda s: None)
-    ok = p.collect(country="ZM", currency="ZMW", amount=100, phone="260961112233", operator="airtel", reference="HM-1")
-    assert ok.ok and ok.ref
-    bad = p.payout(country="CD", currency="USD", amount=20, phone="243812345678", operator="orange", reference="HM-1")
-    assert not bad.ok and "introuvable" in bad.reason
-    rej = p.collect(country="ZM", currency="ZMW", amount=13, phone="260961112233", operator="airtel", reference="HM-2")
-    assert not rej.ok and "introuvable" in rej.reason
-    assert p.refund(ref=ok.ref, amount=100, currency="ZMW").ok
+    p = PawaPayProvider("tok", "https://api.sandbox.pawapay.io", 0, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    ok = p.collect(op_id="dep-1", country="ZM", currency="ZMW", amount_minor=10000, phone="260961112233", operator="airtel", reference="HM-1")
+    assert ok.status == "pending" and ok.ref == "dep-1"                       # accepté : le payeur doit encore valider chez son opérateur
+    assert p.check("collect", "dep-1").status == "completed"
+    bad = p.check("payout", "pay-1")
+    assert bad.status == "failed" and "introuvable" in bad.reason
+    assert p.payout(op_id="pay-1", country="CD", currency="USD", amount_minor=2000, phone="243812345678", operator="orange", reference="HM-1").status == "pending"
+    rej = p.collect(op_id="dep-2", country="ZM", currency="ZMW", amount_minor=1300, phone="260961112233", operator="airtel", reference="HM-2")
+    assert rej.status == "failed" and "introuvable" in rej.reason
+    junk = p.collect(op_id="dep-3", country="ZM", currency="ZMW", amount_minor=1400, phone="260961112233", operator="airtel", reference="HM-3")
+    assert junk.status == "unknown"                                           # réponse illisible : on ne conclut PAS à un échec
+    assert p.check("collect", "dep-q").status == "pending" and p.check("collect", "dep-r").status == "unknown" and p.check("collect", "nope").status == "unknown"
+    assert p.refund(op_id="ref-1", deposit_ref="dep-1", amount_minor=10000, currency="ZMW").status == "pending"
+    down = PawaPayProvider("tok", "https://x", 0, transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("down"))))
+    assert down.collect(op_id="d", country="ZM", currency="ZMW", amount_minor=100, phone="260961112233", operator="airtel", reference="x").status == "unknown"
 
 
 def test_request_in_usd_and_change(c):

@@ -131,6 +131,9 @@ def _sync_images(session: Session, p: Property, paths: list[str], user: User) ->
             session.add(PropertyImage(property_id=p.id, path=path, sort_order=order))
 
 
+from ..geo import check_location  # noqa: E402
+
+
 def _validate_property(payload: S.PropertyWrite) -> None:
     if payload.type in RENT_TYPES:
         if payload.rent_per_month <= 0:
@@ -143,6 +146,7 @@ def _validate_property(payload: S.PropertyWrite) -> None:
         raise HTTPException(status_code=422, detail="La remise mensuelle doit être au moins égale à la remise hebdomadaire.")
     if (payload.latitude is None) != (payload.longitude is None):
         raise HTTPException(status_code=422, detail="Renseignez la latitude ET la longitude (ou aucune des deux).")
+    check_location(payload.city, payload.latitude, payload.longitude)
 
 
 def _fill(p: Property, payload: S.PropertyWrite) -> None:

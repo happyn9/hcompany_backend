@@ -6,16 +6,18 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, func, or_, select
 
 from app.database import get_session
 from app.deps import get_current_admin, get_current_user
 from app.models import User
+from app.money import engine as E
 from app.money import services as svc
 from app.money.models import Invoice, MoneyTransfer, ServicePayment
 from app.money.provider import get_provider
+from app.money import idem
 from app.money import router as mr
 
 router = APIRouter(prefix="/api/v1/money/invoices", tags=["money-invoices"])
@@ -64,7 +66,7 @@ def _status(inv: Invoice, t: Optional[MoneyTransfer]) -> str:
         return "cancelled"
     if not t:
         return "open"
-    if t.status in ("under_review", "completed"):
+    if t.status in ("collected", "under_review", "payout_pending", "completed"):
         return "paid"
     if t.status in ("refunded", "rejected"):
         return t.status
@@ -98,13 +100,11 @@ def create(payload: InvoiceIn, session: Session = Depends(get_session), user: Us
     if len(payload.client_name.strip()) < 2:
         raise HTTPException(status_code=422, detail="Indiquez le nom du client.")
     total = round(sum(l.qty * l.unit_price for l in payload.items), 2)
-    q = svc.quote_receive(session, pc, rc, total, "", payload.receive_operator, domestic=True)
     code = svc.new_code().replace("HM-", "INV-")
-    t = MoneyTransfer(code=svc.new_code(), kind="request", user_id=user.id, from_country=pc, to_country=rc, send_currency=q["send_currency"],
-                      receive_currency=q["receive_currency"], receive_amount=q["receive_amount"], counterpart_name=payload.client_name.strip(),
-                      counterpart_phone=_safe_phone(payload.client_phone, pc), note=f"Facture {code}",
-                      status="awaiting_payer", provider=get_provider().name, expires_at=datetime.utcnow() + timedelta(days=payload.due_days))
-    t.provider_ref = f"{svc.normalize_phone(payload.receive_phone, rc)}|{payload.receive_operator}"
+    # une facture est TOUJOURS de type A : l'émetteur reçoit exactement le montant facturé (frais en supplément pour le client)
+    t = mr.new_request_row(session, user, pc, rc, "A", E.d(total), payload.receive_phone, payload.receive_operator, payload.client_name,
+                           _safe_phone(payload.client_phone, pc), f"Facture {code}", datetime.utcnow() + timedelta(days=payload.due_days))
+    q = {"receive_currency": t.receive_currency}
     inv = Invoice(code=code, user_id=user.id, client_name=payload.client_name.strip(), client_email=payload.client_email.strip().lower(),
                   client_phone=payload.client_phone, client_country=pc, currency=q["receive_currency"],
                   items_json=json.dumps([l.model_dump() for l in payload.items]), total=total, note=payload.note.strip(),
@@ -151,7 +151,7 @@ def view(code: str, pay_op: str = "", session: Session = Depends(get_session), u
     out = _read(session, inv, user)
     if out["status"] == "open":
         t = session.exec(select(MoneyTransfer).where(MoneyTransfer.code == inv.transfer_code)).first()
-        q = svc.quote_receive(session, t.from_country, t.to_country, t.receive_amount, pay_op, t.provider_ref.split("|", 1)[1], domestic=t.from_country == t.to_country)
+        q = svc.api_quote(svc.core_for_request(session, t, pay_op))
         q.pop("provider_cost", None)
         out["quote"] = q
     return out
@@ -163,13 +163,17 @@ class PayIn(BaseModel):
 
 
 @router.post("/{code}/pay")
-def pay(code: str, payload: PayIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+def pay(code: str, payload: PayIn, session: Session = Depends(get_session), user: User = Depends(get_current_user), idempotency_key: str = Header(default="", alias="Idempotency-Key")):
     inv = _get(session, code)
     if inv.cancelled:
         raise HTTPException(status_code=409, detail="Cette facture a été annulée.")
-    mr.pay_request(inv.transfer_code, mr.PayIn(pay_phone=payload.pay_phone, pay_operator=payload.pay_operator), session, user)
-    session.refresh(inv)
-    return _read(session, inv, user)
+
+    def go() -> dict:
+        mr._require_verified(user)
+        mr._pay_request(inv.transfer_code, mr.PayIn(pay_phone=payload.pay_phone, pay_operator=payload.pay_operator), session, user)
+        session.refresh(inv)
+        return _read(session, inv, user)
+    return idem.run(session, user.id, f"invpay:{inv.code}", idempotency_key, payload.model_dump(), go, 200)
 
 
 @router.post("/{code}/cancel")
