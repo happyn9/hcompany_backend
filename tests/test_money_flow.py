@@ -312,13 +312,14 @@ def test_reserve_enforcement_pause_and_topup(c, monkeypatch):
     monkeypatch.setattr(flow, "reserves_enforced", lambda: True)
     with Session(engine) as s:
         base = ledger.available(s, "USD")
+        j1_before = len(s.exec(select(LedgerEntry).where(LedgerEntry.account == "PRV_USD", LedgerEntry.kind == "J1")).all())
     q = c.post(f"{M}/quotes", json=Q).json()
     body = {"from_country": "ZM", "to_country": "CD", "amount": 500, "beneficiary_name": "Maman", "beneficiary_phone": "+243 81 234 5678", "beneficiary_operator": "orange",
             "pay_phone": "0961112233", "pay_operator": "mtn", "quote_id": q["quote_id"]}
     r = c.post(f"{M}/transfers", json=body, headers={"Idempotency-Key": uuid.uuid4().hex})
     assert r.status_code == 503 and base < ledger.hold_needed(1970, 0)                              # aucune réserve en USD : on n'encaisse pas
     with Session(engine) as s:
-        assert not s.exec(select(LedgerEntry).where(LedgerEntry.account == "PRV_USD", LedgerEntry.kind == "J1")).all()
+        assert len(s.exec(select(LedgerEntry).where(LedgerEntry.account == "PRV_USD", LedgerEntry.kind == "J1")).all()) == j1_before
         ledger.post_reserve(s, "USD", 1_000_000_00, 1, "apport de test"); s.commit()
         assert ledger.available(s, "USD") == base + 1_000_000_00
     q2 = c.post(f"{M}/quotes", json=Q).json()

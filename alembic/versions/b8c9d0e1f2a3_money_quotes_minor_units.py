@@ -5,6 +5,9 @@ Revises: a7b8c9d0e1f2
 """
 import sqlalchemy as sa
 from alembic import op
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _safe import add_col, has_col, has_table, has_index
 
 revision = 'b8c9d0e1f2a3'
 down_revision = 'a7b8c9d0e1f2'
@@ -15,17 +18,23 @@ BIG = sa.BigInteger()
 
 
 def upgrade() -> None:
+    fresh = not has_col('moneytransfer', 'send_minor')
     for col in ('send_minor', 'fee_minor', 'total_minor', 'receive_minor', 'requested_minor'):
-        op.add_column('moneytransfer', sa.Column(col, BIG, nullable=False, server_default='0'))
-    op.add_column('moneytransfer', sa.Column('quote_id', sa.String(), nullable=False, server_default=''))
-    op.add_column('moneytransfer', sa.Column('rate_k', sa.String(), nullable=False, server_default=''))
-    op.add_column('moneytransfer', sa.Column('request_type', sa.String(), nullable=False, server_default=''))
-    op.add_column('moneytransfer', sa.Column('requested_currency', sa.String(), nullable=False, server_default=''))
-    op.add_column('moneytransfer', sa.Column('amount_side', sa.String(), nullable=False, server_default=''))
-    op.create_index('ix_moneytransfer_quote_id', 'moneytransfer', ['quote_id'])
+        add_col('moneytransfer', sa.Column(col, BIG, nullable=False, server_default='0'))
+    add_col('moneytransfer', sa.Column('quote_id', sa.String(), nullable=False, server_default=''))
+    add_col('moneytransfer', sa.Column('rate_k', sa.String(), nullable=False, server_default=''))
+    add_col('moneytransfer', sa.Column('request_type', sa.String(), nullable=False, server_default=''))
+    add_col('moneytransfer', sa.Column('requested_currency', sa.String(), nullable=False, server_default=''))
+    add_col('moneytransfer', sa.Column('amount_side', sa.String(), nullable=False, server_default=''))
+    if not has_index('moneytransfer', 'ix_moneytransfer_quote_id'):
+        op.create_index('ix_moneytransfer_quote_id', 'moneytransfer', ['quote_id'])
     # Reprise de l'existant : centimes = arrondi des anciens montants float (une seule fois)
-    for new, old in (('send_minor', 'send_amount'), ('fee_minor', 'fee'), ('total_minor', 'total_paid'), ('receive_minor', 'receive_amount')):
+    # (seulement si les colonnes viennent d'être créées : on n'écrase jamais des montants déjà repris)
+    pairs = (('send_minor', 'send_amount'), ('fee_minor', 'fee'), ('total_minor', 'total_paid'), ('receive_minor', 'receive_amount')) if fresh else ()
+    for new, old in pairs:
         op.execute(f"UPDATE moneytransfer SET {new} = CAST(ROUND({old} * 100) AS BIGINT)")
+    if has_table('moneyquote'):
+        return
     op.create_table('moneyquote',
         sa.Column('id', sa.String(), primary_key=True),
         sa.Column('user_id', sa.Integer(), sa.ForeignKey('user.id'), nullable=False, index=True),

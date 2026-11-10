@@ -57,9 +57,20 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        # Verrou anti-course : si deux instances démarrent en même temps, la 2e attend la fin de la 1re
+        # (au retour, alembic voit la base déjà à jour et ne fait rien).
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql("SELECT pg_advisory_lock(727274001)")
+            connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
-        with context.begin_transaction():
-            context.run_migrations()
+        try:
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            if connection.dialect.name == "postgresql":
+                connection.commit()
+                connection.exec_driver_sql("SELECT pg_advisory_unlock(727274001)")
+                connection.commit()
 
 
 if context.is_offline_mode():
