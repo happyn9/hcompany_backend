@@ -44,14 +44,14 @@ class Settings(BaseSettings):
     cookie_samesite: Optional[str] = None  # none | lax | strict ; vide = « none » en production (site et API sur deux domaines), « lax » sinon. « lax »/« strict » si l'API est servie par le même domaine que le site (proxy)
 
     # --- CORS ---
-    frontend_url: str = "http://localhost:5173"  # base des liens envoyés par e-mail (invitation partenaire)
+    frontend_url: str = "https://hcompany-global.vercel.app"  # base des liens envoyés par e-mail (invitation partenaire)
     partner_invite_required: bool = True  # la candidature partenaire passe par un lien envoyé par H-Company
     money_provider: str = "simulated"  # simulated | pawapay
     pawapay_api_token: str = ""  # jeton API pawaPay (bearer) — sandbox ou production
     pawapay_base_url: str = "https://api.sandbox.pawapay.io"  # production : https://api.pawapay.io
     pawapay_poll_seconds: int = 0  # attente facultative dans la requête (0 = aucune : le webhook et la vérification font foi)
     money_webhook_secret: str = ""  # secret HMAC partagé pour authentifier les webhooks du fournisseur (jamais dans le code ni le dépôt)
-    allowed_origins: str = "http://localhost:5173,http://localhost:4173"
+    allowed_origins: str = "https://hcompany-global.vercel.app,hcompany-e4noz7cim-happy3.vercel.app"
 
     # --- OTP ---
     otp_length: int = 6
