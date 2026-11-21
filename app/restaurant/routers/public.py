@@ -3,16 +3,17 @@ import math
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, func, or_, select
 
 from app.database import get_session
 from app.deps import get_current_user, get_optional_user
 from app.models import User
-from app.restaurant import services as svc
+from app.restaurant import limits as L, services as svc
+from app.restaurant.limits import limiter
 from app.restaurant.models import (
-    BLOCKING_STATUSES, CUISINES, DiningTable, Reservation, Restaurant, RestaurantReview,
+    BLOCKING_STATUSES, CUISINES, SELLER_TYPES, DiningTable, Reservation, Restaurant, RestaurantReview,
 )
 
 router = APIRouter(prefix="/api/v1/restaurant", tags=["restaurant"])
@@ -26,6 +27,16 @@ def _get_live(session: Session, rid: int) -> Restaurant:
     r = session.get(Restaurant, rid)
     if not r or r.status != "active":
         raise HTTPException(status_code=404, detail="Restaurant introuvable.")
+    return r
+
+
+def _get_bookable(session: Session, rid: int) -> Restaurant:
+    """Fiche en ligne ET réservable (A2/F1) : un vendeur individuel, ou un établissement sans table active, renvoie 409
+    (jamais de créneau ni de table proposés). Couvre /tables, /slots et POST /reservations."""
+    r = _get_live(session, rid)
+    reason = svc.reservation_block_reason(session, r)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     return r
 
 
@@ -43,9 +54,12 @@ def home(session: Session = Depends(get_session)):
 
 
 @router.get("/search")
+@limiter.limit(lambda: L.RATE_BROWSE)
 def search(
+    request: Request,
     q: Optional[str] = None, city: Optional[str] = None, cuisine: Optional[str] = None, price: Optional[int] = Query(default=None, ge=1, le=3),
     day: Optional[date] = None, time: Optional[str] = None, party: int = Query(default=2, ge=1, le=40), sort: str = "recommended",
+    seller_type: Optional[str] = None, delivery: bool = False,
     page: int = Query(default=1, ge=1), per_page: int = Query(default=12, ge=1, le=48), session: Session = Depends(get_session),
 ):
     stmt = _live()
@@ -58,12 +72,20 @@ def search(
         stmt = stmt.where(Restaurant.cuisines.like(f"%{cuisine}%"))
     if price:
         stmt = stmt.where(Restaurant.price_level == price)
+    if seller_type in SELLER_TYPES:
+        stmt = stmt.where(Restaurant.seller_type == seller_type)
+    if delivery:
+        stmt = stmt.where(Restaurant.offers_delivery == True)  # noqa: E712
     order = {"rating": (Restaurant.rating_avg.desc(),), "price_asc": (Restaurant.price_level.asc(),), "price_desc": (Restaurant.price_level.desc(),)}.get(sort, (Restaurant.is_featured.desc(), Restaurant.rating_avg.desc()))
     rows = session.exec(stmt.order_by(*order, Restaurant.id.desc()).limit(300)).all()
     free_by = {}
+    excluded = 0
     if day and time:
         kept = []
         for r in rows:
+            if svc.is_individual(r):  # un vendeur individuel n'a pas de table : exclu de la recherche par jour/heure
+                excluded += 1
+                continue
             try:
                 svc.check_slot(r, day, time)
             except HTTPException:
@@ -75,7 +97,7 @@ def search(
         rows = kept
     total = len(rows)
     page_rows = rows[(page - 1) * per_page: page * per_page]
-    return {"items": [svc.card(session, r, free_by.get(r.id)) for r in page_rows], "total": total, "page": page, "pages": max(1, math.ceil(total / per_page))}
+    return {"items": [svc.card(session, r, free_by.get(r.id)) for r in page_rows], "total": total, "page": page, "pages": max(1, math.ceil(total / per_page)), "excluded_individuals": excluded}
 
 
 @router.get("/restaurants/{slug}")
@@ -87,16 +109,18 @@ def restaurant_detail(slug: str, session: Session = Depends(get_session)):
 
 
 @router.get("/restaurants/{rid}/tables")
-def slot_tables(rid: int, day: date, time: str, party: int = Query(default=2, ge=1, le=40), session: Session = Depends(get_session)):
+@limiter.limit(lambda: L.RATE_BROWSE)
+def slot_tables(request: Request, rid: int, day: date, time: str, party: int = Query(default=2, ge=1, le=40), session: Session = Depends(get_session)):
     """Plan de salle pour un créneau : chaque table est libre, prise ou trop petite."""
-    r = _get_live(session, rid)
+    r = _get_bookable(session, rid)
     svc.check_slot(r, day, time)
     return {"tables": svc.tables_for_slot(session, r, day, time, party), "room_w": r.room_w, "room_d": r.room_d}
 
 
 @router.get("/restaurants/{rid}/slots")
-def day_slots(rid: int, day: date, party: int = Query(default=2, ge=1, le=40), session: Session = Depends(get_session)):
-    r = _get_live(session, rid)
+@limiter.limit(lambda: L.RATE_BROWSE)
+def day_slots(request: Request, rid: int, day: date, party: int = Query(default=2, ge=1, le=40), session: Session = Depends(get_session)):
+    r = _get_bookable(session, rid)
     now = svc.local_now()
     if day < now.date() or day > now.date() + timedelta(days=svc.MAX_ADVANCE) or day.weekday() in svc.closed_set(r):
         return {"closed": True, "slots": []}
@@ -140,11 +164,13 @@ class ReserveIn(BaseModel):
 
 
 @router.post("/reservations", status_code=201)
-def reserve(payload: ReserveIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    r = _get_live(session, payload.restaurant_id)
+@limiter.limit(lambda: L.RATE_RESERVE)
+def reserve(request: Request, payload: ReserveIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    r = _get_bookable(session, payload.restaurant_id)
     if payload.party_size > r.max_party:
         raise HTTPException(status_code=422, detail=f"Groupe maximum : {r.max_party} personnes. Contactez le restaurant pour un grand groupe.")
     svc.check_slot(r, payload.day, payload.time)
+    svc.lock_restaurant(session, r)  # sérialise « vérifier la table puis insérer » (PostgreSQL)
     mine = session.exec(select(func.count(Reservation.id)).where(Reservation.user_id == user.id, Reservation.status.in_(("pending", "confirmed")), Reservation.day >= svc.local_now().date())).one()
     if mine >= svc.MAX_ACTIVE_PER_USER:
         raise HTTPException(status_code=409, detail="Vous avez déjà plusieurs réservations à venir. Annulez-en une avant d'en faire une autre.")
@@ -165,13 +191,13 @@ def reserve(payload: ReserveIn, session: Session = Depends(get_session), user: U
             raise HTTPException(status_code=409, detail="Plus de table libre à cette heure pour ce groupe : essayez un autre créneau.")
     pre_json, pre_total = svc.build_preorder(session, r, payload.preorder)
     status = "confirmed" if r.instant_confirm else "pending"
+    start_at, end_at = svc.slot_bounds(payload.day, payload.time, r.slot_minutes)
     x = Reservation(
         code=svc.new_code(session), restaurant_id=r.id, table_id=table.id, user_id=user.id, name=payload.name, phone=payload.phone, party_size=payload.party_size,
-        day=payload.day, time=payload.time, duration_minutes=r.slot_minutes, status=status, note=payload.note, preorder=pre_json, preorder_total=pre_total,
+        day=payload.day, time=payload.time, duration_minutes=r.slot_minutes, start_at=start_at, end_at=end_at, status=status, note=payload.note, preorder=pre_json, preorder_total=pre_total,
         restaurant_name=r.name, table_label=table.label,
     )
-    session.add(x)
-    session.commit()
+    svc.save_reservation(session, x)  # 409 si la table a été prise entre-temps (contrainte DB + vérification)
     session.refresh(x)
     owner = session.get(User, r.owner_id)
     svc.notify(session, r.owner_id, "Nouvelle réservation", f"{x.name} · {x.party_size} pers. · {x.day.isoformat()} {x.time} · table {x.table_label} ({x.code}).", owner.email if owner else None)
@@ -196,7 +222,8 @@ def my_reservations(session: Session = Depends(get_session), user: User = Depend
 
 
 @router.post("/me/reservations/{code}/cancel")
-def cancel(code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+@limiter.limit(lambda: L.RATE_CANCEL)
+def cancel(request: Request, code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     x = _mine(session, code, user)
     if x.status not in ("pending", "confirmed"):
         raise HTTPException(status_code=409, detail="Cette réservation ne peut plus être annulée.")
@@ -216,7 +243,8 @@ class ReviewIn(BaseModel):
 
 
 @router.post("/me/reservations/{code}/review", status_code=201)
-def review(code: str, payload: ReviewIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+@limiter.limit(lambda: L.RATE_REVIEW)
+def review(request: Request, code: str, payload: ReviewIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     x = _mine(session, code, user)
     if x.status != "completed":
         raise HTTPException(status_code=409, detail="Vous pouvez donner votre avis une fois le repas terminé.")

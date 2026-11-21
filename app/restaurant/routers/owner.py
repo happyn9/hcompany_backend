@@ -7,26 +7,53 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from contextvars import ContextVar
+
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, func, select
 
+from app.admin_security import require_admin_confirmed
 from app.database import get_session
 from app.deps import get_current_user
 from app.models import User, UserRole
 from app.restaurant import services as svc
 from app.restaurant.models import (
-    CUISINES, DISH_TAGS, TABLE_SHAPES, TABLE_ZONES, DiningTable, MenuCategory, MenuItem, Reservation, Restaurant, RestaurantImage,
+    CUISINES, DISH_TAGS, SELLER_TYPES, TABLE_SHAPES, TABLE_ZONES, DiningTable, MenuCategory, MenuItem, Reservation, Restaurant, RestaurantImage,
 )
-from app.routers.partner_modules import require_module
-from app.upload_store import save_upload
+from app.restaurant import images as imgcheck, limits as L
+from app.restaurant.limits import limiter
+from app.routers.partner_modules import module_active, require_module
 
-router = APIRouter(prefix="/api/v1/restaurant/owner", tags=["restaurant-owner"])
+# A1.2 — un compte admin peut intervenir sur le restaurant d'un autre (support), mais seulement avec la
+# confirmation administrative récente (X-Admin-Confirm), comme sur les routes /admin. Sans elle : HTTP 428.
+_ADMIN_OK: ContextVar[bool] = ContextVar("resto_owner_admin_confirmed", default=False)
+
+
+async def _admin_guard(user: User = Depends(get_current_user), x_admin_confirm: str = Header(default="")) -> None:
+    ok = False
+    if user.role == UserRole.admin:
+        try:
+            require_admin_confirmed(user, x_admin_confirm)
+            ok = True
+        except HTTPException:
+            ok = False
+    _ADMIN_OK.set(ok)
+
+
+def _admin_override(user: User) -> bool:
+    """True si `user` est un admin confirmé ; lève 428 s'il est admin SANS confirmation ; False pour un non-admin."""
+    if user.role != UserRole.admin:
+        return False
+    if not _ADMIN_OK.get():
+        raise HTTPException(status_code=428, detail="Confirmez votre mot de passe pour agir sur le restaurant d'un autre compte.")
+    return True
+
+
+router = APIRouter(prefix="/api/v1/restaurant/owner", tags=["restaurant-owner"], dependencies=[Depends(_admin_guard)])
 UPLOAD_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "uploads"
 (UPLOAD_ROOT / "restaurant").mkdir(parents=True, exist_ok=True)
 IMG_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-MAGIC = {".png": b"\x89PNG", ".jpg": b"\xff\xd8\xff", ".webp": b"RIFF"}
-MAX_IMG = 5 * 1024 * 1024
 MAX_RESTAURANTS = 5
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -35,6 +62,8 @@ def _mine(session: Session, rid: int, user: User) -> Restaurant:
     r = session.get(Restaurant, rid)
     if not r or (r.owner_id != user.id and user.role != UserRole.admin):
         raise HTTPException(status_code=404, detail="Restaurant introuvable.")
+    if r.owner_id != user.id:
+        _admin_override(user)
     return r
 
 
@@ -44,22 +73,25 @@ def _check_image(path: Optional[str], user: User) -> Optional[str]:
     m = re.fullmatch(r"restaurant/(\d+)-[0-9a-f]{12}\.(png|jpg|webp)", path)
     if not m or (int(m.group(1)) != user.id and user.role != UserRole.admin):
         raise HTTPException(status_code=422, detail="Image invalide : téléversez-la d'abord.")
+    if int(m.group(1)) != user.id:
+        _admin_override(user)
     return path
 
 
 @router.post("/uploads")
-def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_user)):
-    ext = IMG_TYPES.get(file.content_type or "")
-    if not ext:
+@limiter.limit(lambda: L.RATE_UPLOAD)
+def upload_image(request: Request, file: UploadFile = File(...), session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    # A1.3 : module restaurant actif requis (sauf équipe admin), contenu réellement décodé, quotas par compte.
+    if user.role != UserRole.admin and not module_active(session, user, "restaurant"):
+        raise HTTPException(status_code=403, detail="Activez d'abord le module restaurant depuis votre tableau de bord partenaire.")
+    if not IMG_TYPES.get(file.content_type or ""):
         raise HTTPException(status_code=400, detail="Format non supporté (PNG, JPEG ou WebP).")
-    data = file.file.read(MAX_IMG + 1)
-    if len(data) > MAX_IMG:
-        raise HTTPException(status_code=400, detail="L'image ne doit pas dépasser 5 Mo.")
-    if not data.startswith(MAGIC[ext]):
-        raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
-    name = f"{user.id}-{uuid.uuid4().hex[:12]}{ext}"
-    save_upload(UPLOAD_ROOT, f"restaurant/{name}", data)
-    return {"path": f"restaurant/{name}"}
+    data = file.file.read(L.UPLOAD_MAX_BYTES + 1)
+    if len(data) > L.UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail=f"L'image ne doit pas dépasser {L.UPLOAD_MAX_BYTES // (1024 * 1024)} Mo.")
+    ext = imgcheck.decode_image(data)  # l'extension vient du format RÉEL détecté, pas du type déclaré
+    # quota + écriture exclusive disque/base, atomiques même en envois simultanés (voir images.save_image)
+    return {"path": imgcheck.save_image(UPLOAD_ROOT, session, user.id, ext, data)}
 
 
 # --- Fiche -----------------------------------------------------------------------
@@ -88,6 +120,21 @@ class RestaurantIn(BaseModel):
     room_w: float = Field(default=14, ge=4, le=40)
     room_d: float = Field(default=10, ge=4, le=40)
     images: list[str] = Field(default=[], max_length=10)
+    # --- A2 : n'est appliqué que s'il est PRÉSENT dans la requête (voir `_apply_a2`) ---
+    seller_type: str = "restaurant"
+    offers_delivery: bool = False
+    delivery_zones: str = Field(default="", max_length=300)
+    delivery_fee: Optional[float] = Field(default=None, ge=0, le=1_000_000)  # None = à convenir ; 0 = gratuite
+    delivery_fee_note: str = Field(default="", max_length=160)
+    delivery_terms: str = Field(default="", max_length=1500)
+    sale_notes: str = Field(default="", max_length=1500)
+
+    @field_validator("seller_type")
+    @classmethod
+    def _seller_type(cls, v: str) -> str:
+        if v not in SELLER_TYPES:
+            raise ValueError("Type de vendeur inconnu (restaurant ou individual).")
+        return v
 
     @field_validator("open_time", "close_time")
     @classmethod
@@ -132,6 +179,7 @@ def _apply(session: Session, r: Restaurant, p: RestaurantIn, user: User) -> None
     r.slot_minutes, r.max_party, r.instant_confirm, r.accepts_preorder, r.has_terrace = p.slot_minutes, p.max_party, p.instant_confirm, p.accepts_preorder, p.has_terrace
     r.room_w, r.room_d = p.room_w, p.room_d
     r.updated_at = datetime.utcnow()
+    _apply_a2(session, r, p)
     session.add(r)
     session.flush()
     imgs = [_check_image(i, user) for i in p.images]
@@ -139,6 +187,72 @@ def _apply(session: Session, r: Restaurant, p: RestaurantIn, user: User) -> None
         session.delete(old)
     for n, path in enumerate(i for i in imgs if i):
         session.add(RestaurantImage(restaurant_id=r.id, path=path, sort_order=n))
+
+
+TYPE_CHANGE_TO_RESTAURANT = "Vous êtes passé de vendeur individuel à restaurant : complétez l'adresse, le plan de salle et le menu, puis renvoyez la fiche pour validation."
+TYPE_CHANGE_TO_INDIVIDUAL = "Vous êtes passé de restaurant à vendeur individuel : vérifiez votre catalogue et vos conditions de livraison, puis renvoyez la fiche pour validation."
+
+
+def _active_tables_count(session: Session, r: Restaurant) -> int:
+    return int(session.exec(select(func.count(DiningTable.id)).where(DiningTable.restaurant_id == r.id, DiningTable.is_active == True)).one())  # noqa: E712
+
+
+def _missing(session: Session, r: Restaurant) -> list[str]:
+    """Éléments manquants avant publication (envoi pour validation). Restaurant : règles A1 inchangées ;
+    vendeur individuel : résumé + ville, contact (téléphone ou WhatsApp), photo, ≥ 1 plat, + zones si livraison."""
+    out: list[str] = []
+    if svc.is_individual(r):
+        if not (r.summary and r.city):
+            out.append("résumé et ville")
+        if not (r.phone or r.whatsapp):
+            out.append("un contact (téléphone ou WhatsApp)")
+    elif not (r.summary and r.city and r.address):
+        out.append("résumé, ville et adresse")
+    if not svc.images_of(session, r.id):
+        out.append("au moins une photo")
+    if not session.exec(select(func.count(MenuItem.id)).where(MenuItem.restaurant_id == r.id)).one():
+        out.append("au moins un plat" + ("" if svc.is_individual(r) else " au menu"))
+    if svc.is_individual(r):
+        if r.offers_delivery and not svc.delivery_zones_list(r):
+            out.append("les zones de livraison")
+    elif not _active_tables_count(session, r):
+        out.append("au moins une table dans le plan de salle")
+    return out
+
+
+def _apply_a2(session: Session, r: Restaurant, p: RestaurantIn) -> None:
+    """Champs A2. Appliqués seulement s'ils figurent dans la requête (`model_fields_set`) : un ancien client qui ne les
+    envoie pas ne les réinitialise pas ; `delivery_fee: null` explicite efface les frais (« à convenir »).
+
+    F1 — changement de type : jamais auto-réservable ni auto-publié. Si la fiche est en ligne, en pause ou en validation,
+    elle repasse en brouillon (`status_reason` explique pourquoi) et doit être renvoyée pour validation avec les conditions
+    de publication du NOUVEAU type. Rien n'est créé artificiellement (ni table ni salle) et l'historique / le plan sont conservés.
+    Restaurant → individuel refusé (409) tant que des réservations sont en cours."""
+    fs = p.model_fields_set
+    if "seller_type" in fs and p.seller_type != (r.seller_type or "restaurant"):
+        if p.seller_type == "individual":
+            today = svc.local_now().date()
+            running = session.exec(select(func.count(Reservation.id)).where(Reservation.restaurant_id == r.id, Reservation.day >= today, Reservation.status.in_(("pending", "confirmed", "seated")))).one()
+            if running:
+                raise HTTPException(status_code=409, detail="Des réservations sont en cours ou à venir : traitez-les (confirmer, refuser ou annuler) avant de passer en vendeur individuel.")
+        is_new = r.id is None or r.created_at is None
+        r.seller_type = p.seller_type
+        if not is_new and r.status in ("active", "paused", "pending"):
+            r.status = "draft"
+            r.status_reason = TYPE_CHANGE_TO_RESTAURANT if p.seller_type == "restaurant" else TYPE_CHANGE_TO_INDIVIDUAL
+    if "offers_delivery" in fs:
+        r.offers_delivery = p.offers_delivery
+    if "delivery_zones" in fs:
+        r.delivery_zones = p.delivery_zones.strip()
+    if "delivery_fee" in fs:
+        r.delivery_fee = None if p.delivery_fee is None else round(p.delivery_fee, 2)
+    if "delivery_fee_note" in fs:
+        r.delivery_fee_note = p.delivery_fee_note.strip()
+    if "delivery_terms" in fs:
+        r.delivery_terms = p.delivery_terms.strip()
+    if "sale_notes" in fs:
+        r.sale_notes = p.sale_notes.strip()
+    session.add(r)
 
 
 def owner_view(session: Session, r: Restaurant) -> dict:
@@ -152,6 +266,9 @@ def owner_view(session: Session, r: Restaurant) -> dict:
         "menu": svc.menu_of(session, r.id, include_hidden=True),
         "tables": [{"id": t.id, "label": t.label, "seats": t.seats, "shape": t.shape, "zone": t.zone, "x": t.x, "z": t.z, "rotation": t.rotation, "is_active": t.is_active} for t in tables],
         "pending_reservations": int(pending),
+        "seller_type": r.seller_type or "restaurant", "offers_delivery": bool(r.offers_delivery), "delivery_zones": r.delivery_zones or "", "delivery_fee": r.delivery_fee,
+        "delivery_fee_note": r.delivery_fee_note or "", "delivery_terms": r.delivery_terms or "", "sale_notes": r.sale_notes or "",
+        "accepts_reservations": svc.accepts_reservations(session, r), "missing": _missing(session, r),
     })
     return d
 
@@ -163,7 +280,8 @@ def my_restaurants(session: Session = Depends(get_session), user: User = Depends
 
 
 @router.post("/restaurants", status_code=201)
-def create_restaurant(payload: RestaurantIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+@limiter.limit(lambda: L.RATE_OWNER_NEW)
+def create_restaurant(request: Request, payload: RestaurantIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     require_module(session, user, "restaurant")
     if session.exec(select(func.count(Restaurant.id)).where(Restaurant.owner_id == user.id)).one() >= MAX_RESTAURANTS:
         raise HTTPException(status_code=409, detail=f"Vous pouvez gérer jusqu'à {MAX_RESTAURANTS} restaurants.")
@@ -194,22 +312,14 @@ def update_restaurant(rid: int, payload: RestaurantIn, session: Session = Depend
 def submit(rid: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     r = _mine(session, rid, user)
     if r.status not in ("draft", "rejected"):
-        raise HTTPException(status_code=409, detail="Ce restaurant est déjà en validation ou en ligne.")
-    missing = []
-    if not (r.summary and r.city and r.address):
-        missing.append("résumé, ville et adresse")
-    if not svc.images_of(session, r.id):
-        missing.append("au moins une photo")
-    if not session.exec(select(func.count(MenuItem.id)).where(MenuItem.restaurant_id == r.id)).one():
-        missing.append("au moins un plat au menu")
-    if not session.exec(select(func.count(DiningTable.id)).where(DiningTable.restaurant_id == r.id, DiningTable.is_active == True)).one():  # noqa: E712
-        missing.append("au moins une table dans le plan de salle")
+        raise HTTPException(status_code=409, detail=("Cette fiche" if svc.is_individual(r) else "Ce restaurant") + " est déjà en validation ou en ligne.")
+    missing = _missing(session, r)
     if missing:
         raise HTTPException(status_code=422, detail="À compléter avant l'envoi : " + ", ".join(missing) + ".")
     r.status, r.status_reason = "pending", None
     session.add(r)
     for admin in session.exec(select(User).where(User.role == UserRole.admin)).all():
-        svc.notify(session, admin.id, "Restaurant à valider", f"« {r.name} » ({r.city}) attend votre validation dans H-Restaurant.")
+        svc.notify(session, admin.id, "Fiche vendeur à valider" if svc.is_individual(r) else "Restaurant à valider", f"« {r.name} » ({r.city}) attend votre validation dans H-Restaurant.")
     session.commit()
     return owner_view(session, r)
 
@@ -218,7 +328,7 @@ def submit(rid: int, session: Session = Depends(get_session), user: User = Depen
 def pause(rid: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     r = _mine(session, rid, user)
     if r.status != "active":
-        raise HTTPException(status_code=409, detail="Seul un restaurant en ligne peut être mis en pause.")
+        raise HTTPException(status_code=409, detail="Seule une fiche en ligne peut être mise en pause.")
     r.status = "paused"
     session.add(r)
     session.commit()
@@ -229,7 +339,7 @@ def pause(rid: int, session: Session = Depends(get_session), user: User = Depend
 def resume(rid: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     r = _mine(session, rid, user)
     if r.status != "paused":
-        raise HTTPException(status_code=409, detail="Ce restaurant n'est pas en pause.")
+        raise HTTPException(status_code=409, detail="Cette fiche n'est pas en pause.")
     r.status = "active"
     session.add(r)
     session.commit()
@@ -373,6 +483,8 @@ class TableIn(BaseModel):
 def save_tables(rid: int, tables: list[TableIn], session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     """Enregistre tout le plan de salle d'un coup (créations, déplacements, suppressions)."""
     r = _mine(session, rid, user)
+    if svc.is_individual(r):
+        raise HTTPException(status_code=409, detail="Un vendeur individuel n'a pas de plan de salle : passez en « Restaurant » pour enregistrer des tables.")
     if len(tables) > 60:
         raise HTTPException(status_code=422, detail="Maximum 60 tables.")
     labels = [t.label.strip().lower() for t in tables]
@@ -443,7 +555,8 @@ FLOW = {  # action → (statuts de départ, statut d'arrivée)
 
 
 @router.post("/reservations/{code}/action")
-def act(code: str, p: ActionIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+@limiter.limit(lambda: L.RATE_OWNER_ACT)
+def act(request: Request, code: str, p: ActionIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     x = session.exec(select(Reservation).where(Reservation.code == code)).first()
     if not x:
         raise HTTPException(status_code=404, detail="Réservation introuvable.")
@@ -456,6 +569,7 @@ def act(code: str, p: ActionIn, session: Session = Depends(get_session), user: U
             raise HTTPException(status_code=422, detail="Table introuvable.")
         if t.seats < x.party_size:
             raise HTTPException(status_code=422, detail="Cette table est trop petite pour le groupe.")
+        svc.lock_restaurant(session, r)
         if t.id in svc.taken_table_ids(session, r, x.day, x.time, exclude_code=x.code):
             raise HTTPException(status_code=409, detail="Cette table est déjà prise à cette heure.")
         x.table_id, x.table_label = t.id, t.label
@@ -474,8 +588,7 @@ def act(code: str, p: ActionIn, session: Session = Depends(get_session), user: U
     else:
         raise HTTPException(status_code=422, detail="Action inconnue.")
     x.updated_at = svc.local_now()
-    session.add(x)
-    session.commit()
+    svc.save_reservation(session, x, check_table=p.action == "move")  # 409 si le changement de table entre en conflit
     return svc.reservation_read(x)
 
 

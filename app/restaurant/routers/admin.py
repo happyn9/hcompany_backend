@@ -1,4 +1,7 @@
-"""H-Restaurant — administration : validation des restaurants, mise en avant, vue d'ensemble."""
+"""H-Restaurant — administration : validation des restaurants, mise en avant, vue d'ensemble.
+
+A1.2 : TOUTES les routes de ce routeur exigent `require_admin_confirmed` (rôle admin + confirmation
+récente par mot de passe, en-tête X-Admin-Confirm) — même règle que `overview`, sans exception."""
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -8,9 +11,9 @@ from sqlmodel import Session, func, select
 
 from app.database import get_session
 from app.admin_security import require_admin_confirmed
-from app.deps import get_current_admin
 from app.models import User
 from app.restaurant import services as svc
+from app.restaurant.models import SELLER_TYPES
 from app.restaurant.models import RESTAURANT_STATUSES, DiningTable, MenuItem, Reservation, Restaurant
 
 router = APIRouter(prefix="/api/v1/restaurant/admin", tags=["restaurant-admin"])
@@ -25,6 +28,7 @@ def _row(session: Session, r: Restaurant) -> dict:
         "tables": int(session.exec(select(func.count(DiningTable.id)).where(DiningTable.restaurant_id == r.id, DiningTable.is_active == True)).one()),  # noqa: E712
         "dishes": int(session.exec(select(func.count(MenuItem.id)).where(MenuItem.restaurant_id == r.id)).one()),
         "images": svc.images_of(session, r.id),
+        "seller_type": r.seller_type or "restaurant", "offers_delivery": bool(r.offers_delivery),
     })
     return d
 
@@ -41,10 +45,12 @@ def overview(session: Session = Depends(get_session), _a: User = Depends(require
 
 
 @router.get("/restaurants")
-def list_restaurants(status: Optional[str] = None, q: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def list_restaurants(status: Optional[str] = None, q: Optional[str] = None, seller_type: Optional[str] = None, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     stmt = select(Restaurant)
     if status:
         stmt = stmt.where(Restaurant.status == status)
+    if seller_type in SELLER_TYPES:
+        stmt = stmt.where(Restaurant.seller_type == seller_type)
     if q:
         stmt = stmt.where(Restaurant.name.ilike(f"%{q.strip()}%"))
     return [_row(session, r) for r in session.exec(stmt.order_by(Restaurant.created_at.desc()).limit(200)).all()]
@@ -62,45 +68,48 @@ def _get(session: Session, rid: int) -> Restaurant:
 
 
 @router.post("/restaurants/{rid}/approve")
-def approve(rid: int, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def approve(rid: int, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     r = _get(session, rid)
     if r.status not in ("pending", "suspended", "rejected"):
-        raise HTTPException(status_code=409, detail="Ce restaurant n'est pas en attente.")
+        raise HTTPException(status_code=409, detail=("Cette fiche" if svc.is_individual(r) else "Ce restaurant") + " n'est pas en attente.")
     r.status, r.status_reason, r.approved_at = "active", None, datetime.utcnow()
     session.add(r)
     owner = session.get(User, r.owner_id)
-    svc.notify(session, r.owner_id, "Restaurant validé", f"« {r.name} » est en ligne : les clients peuvent réserver.", owner.email if owner else None)
+    if svc.is_individual(r):  # F2 : jamais « réserver » pour un vendeur individuel
+        svc.notify(session, r.owner_id, "Fiche vendeur validée", f"« {r.name} » est en ligne : les clients peuvent consulter vos plats et vos conditions de livraison, puis vous contacter directement.", owner.email if owner else None)
+    else:
+        svc.notify(session, r.owner_id, "Restaurant validé", f"« {r.name} » est en ligne : les clients peuvent réserver.", owner.email if owner else None)
     session.commit()
     return _row(session, r)
 
 
 @router.post("/restaurants/{rid}/reject")
-def reject(rid: int, p: DecisionIn, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def reject(rid: int, p: DecisionIn, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     r = _get(session, rid)
     if r.status != "pending":
-        raise HTTPException(status_code=409, detail="Ce restaurant n'est pas en attente.")
+        raise HTTPException(status_code=409, detail=("Cette fiche" if svc.is_individual(r) else "Ce restaurant") + " n'est pas en attente.")
     if not p.reason.strip():
         raise HTTPException(status_code=422, detail="Indiquez ce qu'il faut corriger.")
     r.status, r.status_reason = "rejected", p.reason.strip()
     session.add(r)
     owner = session.get(User, r.owner_id)
-    svc.notify(session, r.owner_id, "Restaurant à corriger", f"« {r.name} » : {r.status_reason}", owner.email if owner else None)
+    svc.notify(session, r.owner_id, "Fiche vendeur à corriger" if svc.is_individual(r) else "Restaurant à corriger", f"« {r.name} » : {r.status_reason}", owner.email if owner else None)
     session.commit()
     return _row(session, r)
 
 
 @router.post("/restaurants/{rid}/suspend")
-def suspend(rid: int, p: DecisionIn, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def suspend(rid: int, p: DecisionIn, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     r = _get(session, rid)
     r.status, r.status_reason = "suspended", p.reason.strip() or None
     session.add(r)
-    svc.notify(session, r.owner_id, "Restaurant suspendu", f"« {r.name} » a été suspendu. {r.status_reason or ''}".strip())
+    svc.notify(session, r.owner_id, "Fiche vendeur suspendue" if svc.is_individual(r) else "Restaurant suspendu", f"« {r.name} » a été suspendu. {r.status_reason or ''}".strip())
     session.commit()
     return _row(session, r)
 
 
 @router.post("/restaurants/{rid}/feature")
-def feature(rid: int, session: Session = Depends(get_session), _a: User = Depends(get_current_admin)):
+def feature(rid: int, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
     r = _get(session, rid)
     r.is_featured = not r.is_featured
     session.add(r)

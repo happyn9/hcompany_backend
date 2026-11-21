@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
 from app.models import User
@@ -76,8 +77,93 @@ def taken_table_ids(session: Session, r: Restaurant, day: date, time: str, exclu
     return {x.table_id for x in rows if x.code != exclude_code and _overlap(time, r.slot_minutes, x.time, x.duration_minutes)}
 
 
+# --- Anti double-réservation (phase A1.1) -------------------------------------------------
+# Trois couches, de la plus forte à la plus fine :
+#  1. PostgreSQL : contrainte d'exclusion `reservation_no_table_overlap` (migration d1a2b3c4e5f6) —
+#     garantie ultime, valable même si deux transactions s'exécutent exactement en même temps.
+#  2. PostgreSQL : verrou de ligne sur le restaurant pendant « vérifier puis insérer » (sérialise les
+#     réservations d'un même restaurant ; sans effet sur SQLite).
+#  3. Vérification juste après l'insertion (dans la transaction) : couvre SQLite (dev/tests), où il n'y
+#     a ni verrou de ligne ni contrainte d'exclusion.
+OVERLAP_CONSTRAINT = "reservation_no_table_overlap"
+TAKEN_MSG = "Cette table vient d'être réservée : choisissez-en une autre ou un autre créneau."
+
+
+def slot_bounds(day: date, time: str, duration_minutes: int) -> tuple[datetime, datetime]:
+    """Plage d'occupation [début, fin) d'une table, en heure locale (naïve)."""
+    start = datetime.combine(day, datetime.min.time()) + timedelta(minutes=to_min(time))
+    return start, start + timedelta(minutes=duration_minutes)
+
+
+def lock_restaurant(session: Session, r: Restaurant) -> None:
+    """`SELECT … FOR UPDATE` sur la ligne du restaurant : les réservations concurrentes d'un même
+    restaurant passent l'une après l'autre. Ignoré par SQLite. Libéré au commit/rollback."""
+    session.exec(select(Restaurant.id).where(Restaurant.id == r.id).with_for_update()).first()
+
+
+def table_conflict(session: Session, x: Reservation) -> bool:
+    """Une AUTRE réservation bloquante occupe-t-elle déjà cette table sur un créneau qui chevauche ?"""
+    if x.table_id is None or x.status not in BLOCKING_STATUSES:
+        return False
+    rows = session.exec(select(Reservation).where(
+        Reservation.table_id == x.table_id, Reservation.day == x.day, Reservation.status.in_(BLOCKING_STATUSES), Reservation.id != x.id,
+    )).all()
+    return any(_overlap(x.time, x.duration_minutes, y.time, y.duration_minutes) for y in rows)
+
+
+def save_reservation(session: Session, x: Reservation, *, check_table: bool = True) -> None:
+    """Enregistre (insertion ou changement de table/statut) en transformant tout conflit de table en HTTP 409.
+    En cas de conflit la transaction est annulée : rien n'est écrit.
+    `check_table=False` pour les simples changements de statut : ils ne modifient pas l'occupation de la table
+    (et ne doivent pas être bloqués par d'éventuels anciens chevauchements déjà présents en base)."""
+    try:
+        session.add(x)
+        session.flush()
+        if check_table and table_conflict(session, x):
+            session.rollback()
+            raise HTTPException(status_code=409, detail=TAKEN_MSG)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        if OVERLAP_CONSTRAINT in str(getattr(exc, "orig", exc)):
+            raise HTTPException(status_code=409, detail=TAKEN_MSG)
+        logger.warning("Conflit d'intégrité à l'enregistrement d'une réservation : %s", exc.__class__.__name__)
+        raise HTTPException(status_code=409, detail="Conflit lors de l'enregistrement : réessayez dans un instant.")
+
+
 def active_tables(session: Session, r: Restaurant) -> list[DiningTable]:
     return session.exec(select(DiningTable).where(DiningTable.restaurant_id == r.id, DiningTable.is_active == True).order_by(DiningTable.seats, DiningTable.id)).all()  # noqa: E712
+
+
+def is_individual(r: Restaurant) -> bool:
+    return (getattr(r, "seller_type", "restaurant") or "restaurant") == "individual"
+
+
+def accepts_reservations(session: Session, r: Restaurant) -> bool:
+    """A2/F1 — une fiche n'est réservable que si ce n'est PAS un vendeur individuel ET qu'elle a au moins une table
+    active. Jamais « auto-réservable » après un changement de type : sans plan de salle, pas de réservation."""
+    return (not is_individual(r)) and bool(active_tables(session, r))
+
+
+def reservation_block_reason(session: Session, r: Restaurant) -> Optional[str]:
+    if is_individual(r):
+        return "Ce vendeur ne prend pas de réservations : contactez-le directement (WhatsApp ou appel)."
+    if not active_tables(session, r):
+        return "Les réservations ne sont pas encore ouvertes pour cet établissement (plan de salle à compléter)."
+    return None
+
+
+def delivery_zones_list(r: Restaurant) -> list[str]:
+    import re
+    return [z.strip() for z in re.split(r"[,;\n]", r.delivery_zones or "") if z.strip()]
+
+
+def delivery_view(r: Restaurant) -> dict:
+    """Conditions de livraison et de vente publiées. HFood ne livre pas et n'encaisse pas : paiement toujours manuel."""
+    return {
+        "offers": bool(r.offers_delivery), "zones": delivery_zones_list(r), "fee": r.delivery_fee, "fee_note": r.delivery_fee_note or "",
+        "terms": r.delivery_terms or "", "sale_notes": r.sale_notes or "", "payment": "manual",
+    }
 
 
 def tables_for_slot(session: Session, r: Restaurant, day: date, time: str, party: int) -> list[dict]:
@@ -154,13 +240,16 @@ def card(session: Session, r: Restaurant, free: Optional[int] = None) -> dict:
         "id": r.id, "slug": r.slug, "name": r.name, "summary": r.summary, "cuisines": [c for c in r.cuisines.split(",") if c], "city": r.city, "area": r.area,
         "price_level": r.price_level, "image": imgs[0] if imgs else None, "rating_avg": r.rating_avg, "rating_count": r.rating_count,
         "open_time": r.open_time, "close_time": r.close_time, "instant_confirm": r.instant_confirm, "is_featured": r.is_featured, "free_tables": free,
+        "seller_type": r.seller_type or "restaurant", "offers_delivery": bool(r.offers_delivery), "delivery_fee": r.delivery_fee,
     }
 
 
-def menu_of(session: Session, rid: int, include_hidden: bool = False) -> list[dict]:
+def menu_of(session: Session, rid: int, include_hidden: bool = False, include_unavailable: bool = False) -> list[dict]:
+    """`include_hidden` : vue propriétaire (tout, y compris catégories vides). `include_unavailable` (V7) : vue publique qui
+    garde les plats indisponibles — ils sont signalés par `is_available = False` et jamais retirés de la catégorie."""
     cats = session.exec(select(MenuCategory).where(MenuCategory.restaurant_id == rid).order_by(MenuCategory.sort_order, MenuCategory.id)).all()
     items = session.exec(select(MenuItem).where(MenuItem.restaurant_id == rid).order_by(MenuItem.sort_order, MenuItem.id)).all()
-    if not include_hidden:
+    if not include_hidden and not include_unavailable:
         items = [i for i in items if i.is_available]
     def row(i: MenuItem) -> dict:
         return {"id": i.id, "name": i.name, "description": i.description, "price": i.price, "image": i.image_path, "tags": [t for t in i.tags.split(",") if t], "is_available": i.is_available, "category_id": i.category_id}
@@ -177,9 +266,16 @@ def detail(session: Session, r: Restaurant) -> dict:
         "description": r.description, "address": r.address, "latitude": r.latitude, "longitude": r.longitude, "phone": r.phone, "whatsapp": r.whatsapp,
         "images": images_of(session, r.id), "closed_days": sorted(closed_set(r)), "slot_minutes": r.slot_minutes, "max_party": r.max_party,
         "accepts_preorder": r.accepts_preorder, "has_terrace": r.has_terrace, "room_w": r.room_w, "room_d": r.room_d,
-        "menu": menu_of(session, r.id), "slots": slot_times(r),
-        "tables": [{"id": t.id, "label": t.label, "seats": t.seats, "shape": t.shape, "zone": t.zone, "x": t.x, "z": t.z, "rotation": t.rotation} for t in active_tables(session, r)],
+        "menu": menu_of(session, r.id, include_unavailable=True),
+        "delivery": delivery_view(r), "sale_notes": r.sale_notes or "",
     })
+    bookable = accepts_reservations(session, r)
+    d["accepts_reservations"] = bookable
+    d["slots"] = slot_times(r) if bookable else []
+    d["tables"] = [{"id": t.id, "label": t.label, "seats": t.seats, "shape": t.shape, "zone": t.zone, "x": t.x, "z": t.z, "rotation": t.rotation} for t in active_tables(session, r)] if bookable else []
+    if is_individual(r):
+        d["accepts_preorder"] = False
+        d["has_terrace"] = False
     return d
 
 
