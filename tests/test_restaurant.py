@@ -22,7 +22,15 @@ from app.main import app  # noqa: E402
 from app.models import PartnerModule, User, UserRole  # noqa: E402
 from app.restaurant.services import local_now  # noqa: E402
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+def _img(fmt="PNG", size=(8, 8)):
+    """Vraie petite image (depuis A1.3, le contenu est décodé : un faux en-tête est refusé)."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, (200, 80, 40)).save(buf, fmt)
+    return buf.getvalue()
+
+
+PNG = _img("PNG")
 API = "/api/v1/restaurant"
 
 
@@ -31,6 +39,16 @@ def day(offset=2):
     while d.weekday() == 6:  # le restaurant de test ferme le dimanche
         d += timedelta(days=1)
     return d.isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _relax_rate_limits(monkeypatch):
+    """Ces tests de parcours enchaînent beaucoup d'appels depuis la même « IP » : limites relâchées ici
+    (les limites elles-mêmes sont testées dans test_hfood_a1.py)."""
+    from app.restaurant import limits as L
+    for k in ("RATE_RESERVE", "RATE_CANCEL", "RATE_REVIEW", "RATE_UPLOAD", "RATE_OWNER_NEW", "RATE_OWNER_ACT", "RATE_BROWSE"):
+        monkeypatch.setattr(L, k, "100000/minute")
+    L.limiter.reset()
 
 
 @pytest.fixture(scope="module")

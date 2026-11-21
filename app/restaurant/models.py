@@ -10,6 +10,7 @@ from sqlmodel import Field, SQLModel
 RESTAURANT_STATUSES = ("draft", "pending", "active", "paused", "rejected", "suspended")
 RESERVATION_STATUSES = ("pending", "confirmed", "seated", "completed", "cancelled", "declined", "no_show")
 BLOCKING_STATUSES = ("pending", "confirmed", "seated")  # occupent une table
+SELLER_TYPES = ("restaurant", "individual")  # A2 : établissement avec salle / vendeur individuel (sans salle ni réservation)
 TABLE_SHAPES = ("round", "square", "rect")
 TABLE_ZONES = ("indoor", "terrace", "vip")
 CUISINES = ("zambian", "african", "congolese", "indian", "italian", "chinese", "grill", "seafood", "fastfood", "vegetarian", "cafe", "bakery", "international")
@@ -45,6 +46,14 @@ class Restaurant(SQLModel, table=True):
     has_terrace: bool = False
     room_w: float = 14
     room_d: float = 10
+    # --- A2 : type de vendeur, livraison et conditions de vente (contact direct, paiement manuel) ---
+    seller_type: str = Field(default="restaurant", index=True)  # 'restaurant' | 'individual'
+    offers_delivery: bool = False
+    delivery_zones: str = ""
+    delivery_fee: Optional[float] = None  # None = « à convenir », 0 = gratuite
+    delivery_fee_note: str = ""
+    delivery_terms: str = ""
+    sale_notes: str = ""
     status: str = Field(default="draft", index=True)
     status_reason: Optional[str] = None
     is_featured: bool = False
@@ -112,6 +121,12 @@ class Reservation(SQLModel, table=True):
     day: date = Field(index=True)
     time: str = "19:00"  # HH:MM
     duration_minutes: int = 90
+    # Plage d'occupation de la table [start_at, end_at) en heure locale du restaurant (naïve).
+    # Sert de base à la contrainte d'exclusion PostgreSQL `reservation_no_table_overlap`
+    # (migration `d1a2b3c4e5f6`) : deux réservations bloquantes ne peuvent pas se
+    # chevaucher sur une même table. NULL pour les anciennes lignes non migrées.
+    start_at: Optional[datetime] = Field(default=None)
+    end_at: Optional[datetime] = Field(default=None)
     status: str = Field(default="pending", index=True)
     note: str = ""
     preorder: str = "[]"  # JSON [{item_id,name,qty,price}]
