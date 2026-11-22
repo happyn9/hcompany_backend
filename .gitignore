@@ -1,7 +1,5 @@
 __pycache__/
 *.pyc
-__pycache__/
-*.pyc
 
 # Secrets locaux : ne jamais suivre dans Git (seul .env.example est versionné)
 .env
