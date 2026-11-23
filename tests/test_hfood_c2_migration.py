@@ -165,4 +165,4 @@ def test_chain_and_single_new_head(db):
     with db.engine.connect() as cx:
         assert cx.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == C2
     heads = {ln.split()[0] for ln in db.alembic("heads").stdout.splitlines() if "(head)" in ln}
-    assert C2 in heads and A2 not in heads and heads - {C2} <= {"a1d5c8e2f4b7"}  # C2 prolonge A2 ; la branche historique a1d5… est inchangée
+    assert "a4d1c2b3e5f6" in heads and C2 not in heads and A2 not in heads and heads - {"a4d1c2b3e5f6"} <= {"a1d5c8e2f4b7"}  # D1 prolonge C2 ; la branche historique a1d5… est inchangée

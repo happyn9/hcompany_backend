@@ -13,6 +13,8 @@ RESERVATION_STATUSES = ("pending", "confirmed", "seated", "completed", "cancelle
 BLOCKING_STATUSES = ("pending", "confirmed", "seated")  # occupent une table
 SELLER_TYPES = ("restaurant", "individual")  # A2 : établissement avec salle / vendeur individuel (sans salle ni réservation)
 # C2 : commandes. Le statut de commande et le statut de paiement sont SÉPARÉS (paiement manuel, vendeur par vendeur).
+# D1 : transitions autorisées côté vendeur (après acceptation)
+SELLER_TRANSITIONS = {"accepted": ("preparing", "ready", "completed", "cancelled"), "preparing": ("ready", "completed", "cancelled"), "ready": ("completed", "cancelled")}
 ORDER_STATUSES = ("pending", "accepted", "declined", "preparing", "ready", "completed", "cancelled")
 PAYMENT_STATUSES = ("unpaid", "declared", "confirmed")
 FULFILMENTS = ("delivery", "pickup")
@@ -197,6 +199,10 @@ class FoodSubOrder(SQLModel, table=True):
     payment_status: str = Field(default="unpaid", index=True)
     decline_reason: Optional[str] = None
     note: str = ""
+    payment_method: Optional[str] = None  # D1 : paiement MANUEL — texte libre (ex. « Airtel Money »), jamais traité par HFood
+    payment_ref: Optional[str] = None
+    payment_note: Optional[str] = None
+    status_note: Optional[str] = None  # motif d'annulation par le vendeur, etc.
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
