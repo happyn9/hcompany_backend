@@ -14,7 +14,7 @@ from app.deps import get_current_user
 from app.models import User
 from app.restaurant import limits as L, orders as od, services as svc
 from app.restaurant.limits import limiter
-from app.restaurant.models import FoodOrder, FoodSubOrder, Restaurant
+from app.restaurant.models import SELLER_TRANSITIONS, FoodOrder, FoodSubOrder, Restaurant
 
 router = APIRouter(prefix="/api/v1/restaurant", tags=["restaurant-orders"])
 KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{8,64}$")
@@ -133,10 +133,15 @@ def cancel_suborder(request: Request, code: str, session: Session = Depends(get_
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Cette commande a déjà reçu une réponse du vendeur : contactez-le directement.")
     r = session.get(Restaurant, s.restaurant_id)
-    svc.notify(session, r.owner_id if r else None, "Commande annulée", f"Le client a annulé la commande {s.code}.")
+    svc.notify(session, r.owner_id if r else None, "Commande annulée", f"Le client a annulé la commande {s.code}.", email=_email(session, r.owner_id if r else None))
     session.commit()
     session.refresh(s)
     return od.sub_view(session, s)
+
+
+def _email(session: Session, user_id: Optional[int]) -> Optional[str]:
+    u = session.get(User, user_id) if user_id else None
+    return (u.email or None) if u else None
 
 
 # ───────────────────────── Espace vendeur (boîte de réception minimale ; la suite : phase D) ─────────────────────────
@@ -184,7 +189,101 @@ def seller_decision(request: Request, code: str, payload: DecisionIn, session: S
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Cette commande n'est plus en attente.")
     msg = f"{s.restaurant_name} a accepté votre commande ({s.code}). Convenez de la livraison et du paiement directement avec le vendeur." if new == "accepted" else f"{s.restaurant_name} ne peut pas honorer votre commande ({s.code}). Motif : {payload.reason}"
-    svc.notify(session, o.user_id, "Commande acceptée" if new == "accepted" else "Commande refusée", msg)
+    svc.notify(session, o.user_id, "Commande acceptée" if new == "accepted" else "Commande refusée", msg, email=_email(session, o.user_id))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s, seller=True, order=o)
+
+
+# ───────────────────────── D1 : suivi de commande et paiement manuel ─────────────────────────
+
+class StatusIn(BaseModel):
+    status: Literal["preparing", "ready", "completed", "cancelled"]
+    reason: str = Field(default="", max_length=300)
+
+    @field_validator("reason")
+    @classmethod
+    def _r(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+_STATUS_MSG = {"preparing": ("Commande en préparation", "{v} prépare votre commande ({c})."), "ready": ("Commande prête", "Votre commande {c} chez {v} est prête. Convenez de la remise ou de la livraison directement avec le vendeur."), "completed": ("Commande terminée", "La commande {c} chez {v} est terminée. Merci !"), "cancelled": ("Commande annulée par le vendeur", "{v} a annulé la commande {c}.")}
+
+
+@router.post("/seller/orders/{code}/status")
+@limiter.limit(lambda: L.RATE_OWNER_ACT)
+def seller_status(request: Request, code: str, payload: StatusIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Fait avancer UNE sous-commande acceptée (préparation → prête → terminée) ou l'annule avec un motif. Transition atomique ; les autres vendeurs ne sont pas touchés."""
+    s, o = _seller_sub(session, code, user)
+    if payload.status == "cancelled" and not payload.reason:
+        raise HTTPException(status_code=422, detail="Indiquez un motif d'annulation : le client le recevra.")
+    allowed_from = [cur for cur, nxt in SELLER_TRANSITIONS.items() if payload.status in nxt]
+    res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.status.in_(allowed_from)).values(status=payload.status, status_note=payload.reason or None, updated_at=datetime.utcnow()))
+    if res.rowcount != 1:
+        raise HTTPException(status_code=409, detail="Ce changement de statut n'est pas possible depuis l'état actuel de la commande.")
+    title, body = _STATUS_MSG[payload.status]
+    body = body.format(v=s.restaurant_name, c=s.code) + (f" Motif : {payload.reason}" if payload.reason else "")
+    svc.notify(session, o.user_id, title, body, email=_email(session, o.user_id))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s, seller=True, order=o)
+
+
+class PayDeclareIn(BaseModel):
+    method: str = Field(default="", max_length=60)
+    reference: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=300)
+
+    @field_validator("method", "reference", "note")
+    @classmethod
+    def _c(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+@router.post("/me/suborders/{code}/payment")
+@limiter.limit(lambda: L.RATE_CANCEL)
+def declare_payment(request: Request, code: str, payload: PayDeclareIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Le client DÉCLARE avoir payé le vendeur (paiement manuel, hors HFood). Rien n'est encaissé ni vérifié ici : c'est le vendeur qui confirme."""
+    s = session.exec(select(FoodSubOrder).where(FoodSubOrder.code == code)).first()
+    o = session.get(FoodOrder, s.order_id) if s else None
+    if not s or not o or o.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Commande introuvable.")
+    res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.payment_status == "unpaid", FoodSubOrder.status.in_(("accepted", "preparing", "ready", "completed"))).values(payment_status="declared", payment_method=payload.method or None, payment_ref=payload.reference or None, payment_note=payload.note or None, updated_at=datetime.utcnow()))
+    if res.rowcount != 1:
+        raise HTTPException(status_code=409, detail="Le paiement ne peut être déclaré qu'une fois la commande acceptée, et une seule fois.")
+    r = session.get(Restaurant, s.restaurant_id)
+    svc.notify(session, r.owner_id if r else None, "Paiement déclaré", f"Le client indique avoir payé la commande {s.code}. Vérifiez la réception puis confirmez.", email=_email(session, r.owner_id if r else None))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s)
+
+
+class PayDecisionIn(BaseModel):
+    action: Literal["confirm", "reject"]
+    note: str = Field(default="", max_length=300)
+
+    @field_validator("note")
+    @classmethod
+    def _n(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+@router.post("/seller/orders/{code}/payment")
+@limiter.limit(lambda: L.RATE_OWNER_ACT)
+def seller_payment(request: Request, code: str, payload: PayDecisionIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Le vendeur confirme avoir reçu le paiement (ou le conteste : retour à « à régler »). Seule action qui change `payment_status` côté vendeur ; jamais automatique."""
+    s, o = _seller_sub(session, code, user)
+    if payload.action == "reject" and not payload.note:
+        raise HTTPException(status_code=422, detail="Indiquez pourquoi le paiement n'est pas reçu : le client le verra.")
+    if payload.action == "confirm":
+        frm, to = ("unpaid", "declared"), "confirmed"  # le vendeur peut aussi confirmer un paiement reçu en main propre sans déclaration préalable
+    else:
+        frm, to = ("declared",), "unpaid"
+    res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.payment_status.in_(frm), FoodSubOrder.status.in_(("accepted", "preparing", "ready", "completed"))).values(payment_status=to, payment_note=payload.note or s.payment_note, updated_at=datetime.utcnow()))
+    if res.rowcount != 1:
+        raise HTTPException(status_code=409, detail="Ce changement de paiement n'est pas possible dans l'état actuel.")
+    title, body = ("Paiement confirmé", f"{s.restaurant_name} confirme avoir reçu votre paiement ({s.code}).") if to == "confirmed" else ("Paiement non reçu", f"{s.restaurant_name} indique ne pas avoir reçu votre paiement ({s.code}). Motif : {payload.note}")
+    svc.notify(session, o.user_id, title, body, email=_email(session, o.user_id))
     session.commit()
     session.refresh(s)
     return od.sub_view(session, s, seller=True, order=o)

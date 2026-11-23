@@ -161,7 +161,7 @@ def sub_view(session: Session, s: FoodSubOrder, *, seller: bool = False, order: 
         "code": s.code, "restaurant_id": s.restaurant_id, "restaurant_name": s.restaurant_name, "seller_type": s.seller_type, "status": s.status, "payment_status": s.payment_status,
         "fulfilment": s.fulfilment, "delivery_address": s.delivery_address, "delivery_zone": s.delivery_zone, "delivery_fee": s.delivery_fee, "fee_pending": s.fee_pending,
         "delivery_fee_note": s.delivery_fee_note, "delivery_terms": s.delivery_terms, "items_total": s.items_total, "total_known": s.total_known, "decline_reason": s.decline_reason,
-        "note": s.note, "created_at": s.created_at.isoformat(), "updated_at": s.updated_at.isoformat(), "payment": "manual",
+        "note": s.note, "payment_method": s.payment_method, "payment_ref": s.payment_ref, "payment_note": s.payment_note, "status_note": s.status_note, "created_at": s.created_at.isoformat(), "updated_at": s.updated_at.isoformat(), "payment": "manual",
         "items": [{"item_id": i.menu_item_id, "name": i.name, "unit_price": i.unit_price, "qty": i.qty, "line_total": i.line_total} for i in items],
     }
     if seller and order is not None:  # le vendeur ne voit que SA sous-commande + le contact nécessaire à la livraison
