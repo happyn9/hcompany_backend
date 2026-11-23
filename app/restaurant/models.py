@@ -5,12 +5,17 @@ dans une salle de `room_w` × `room_d` ; il sert au plan 2D de l'éditeur et à 
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 RESTAURANT_STATUSES = ("draft", "pending", "active", "paused", "rejected", "suspended")
 RESERVATION_STATUSES = ("pending", "confirmed", "seated", "completed", "cancelled", "declined", "no_show")
 BLOCKING_STATUSES = ("pending", "confirmed", "seated")  # occupent une table
 SELLER_TYPES = ("restaurant", "individual")  # A2 : établissement avec salle / vendeur individuel (sans salle ni réservation)
+# C2 : commandes. Le statut de commande et le statut de paiement sont SÉPARÉS (paiement manuel, vendeur par vendeur).
+ORDER_STATUSES = ("pending", "accepted", "declined", "preparing", "ready", "completed", "cancelled")
+PAYMENT_STATUSES = ("unpaid", "declared", "confirmed")
+FULFILMENTS = ("delivery", "pickup")
 TABLE_SHAPES = ("round", "square", "rect")
 TABLE_ZONES = ("indoor", "terrace", "vip")
 CUISINES = ("zambian", "african", "congolese", "indian", "italian", "chinese", "grill", "seafood", "fastfood", "vegetarian", "cafe", "bakery", "international")
@@ -147,3 +152,62 @@ class RestaurantReview(SQLModel, table=True):
     rating: int
     comment: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FoodOrder(SQLModel, table=True):
+    """Commande PARENT du client (C2). Elle regroupe une sous-commande indépendante par vendeur ; elle ne porte aucune
+    logique vendeur. `idempotency_key` + `user_id` sont uniques : rejouer un checkout ne crée jamais de doublon."""
+    __tablename__ = "foodorder"
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_foodorder_user_idem"),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    idempotency_key: str = Field(index=True)
+    request_hash: str = ""
+    contact_name: str = ""
+    phone: str = ""
+    note: str = ""
+    currency: str = "ZMW"
+    items_total: float = 0
+    fees_known_total: float = 0  # somme des frais de livraison CONNUS (les frais « à convenir » ne sont pas inclus)
+    fees_pending: bool = False
+    grand_total: float = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FoodSubOrder(SQLModel, table=True):
+    """Sous-commande d'UN vendeur : articles, montants, modalités, statut et paiement indépendants des autres vendeurs."""
+    __tablename__ = "foodsuborder"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)
+    order_id: int = Field(foreign_key="foodorder.id", index=True)
+    restaurant_id: int = Field(foreign_key="restaurant.id", index=True)
+    restaurant_name: str = ""
+    seller_type: str = "restaurant"
+    fulfilment: str = "delivery"
+    delivery_address: str = ""
+    delivery_zone: str = ""
+    delivery_fee: Optional[float] = None  # None = à convenir ; 0 = gratuite (instantané au moment de la commande)
+    delivery_fee_note: str = ""
+    delivery_terms: str = ""
+    items_total: float = 0
+    total_known: float = 0
+    fee_pending: bool = False
+    status: str = Field(default="pending", index=True)
+    payment_status: str = Field(default="unpaid", index=True)
+    decline_reason: Optional[str] = None
+    note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FoodOrderItem(SQLModel, table=True):
+    """Ligne figée (nom et prix au moment de la commande) : modifier ou supprimer un plat ne change pas les commandes passées."""
+    __tablename__ = "foodorderitem"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sub_order_id: int = Field(foreign_key="foodsuborder.id", index=True)
+    menu_item_id: Optional[int] = Field(default=None, index=True)
+    name: str
+    unit_price: float
+    qty: int
+    line_total: float

@@ -12,6 +12,9 @@ Limites de débit (format slowapi : « N/minute », « N/hour », plusieurs limi
   RESTO_RL_OWNER_NEW création d'un restaurant       défaut  10/hour
   RESTO_RL_OWNER_ACT action sur une réservation     défaut  120/minute
   RESTO_RL_BROWSE    recherche / créneaux / tables  défaut  120/minute  (anti-aspiration, par IP)
+  RESTO_RL_QUOTE     devis de panier (C2)           défaut  60/minute;600/hour
+  RESTO_RL_CHECKOUT  validation de commande (C2)    défaut  5/minute;30/hour
+  RESTO_CART_MAX_VENDORS / _LINES / _QTY, RESTO_ORDER_MAX_ACTIVE : bornes du panier et des commandes en attente
 
 Uploads :
   RESTO_UPLOAD_MAX_MB        taille max d'une image (Mo)            défaut 5
@@ -68,6 +71,12 @@ RATE_UPLOAD = _env("RESTO_RL_UPLOAD", "20/minute;200/hour")
 RATE_OWNER_NEW = _env("RESTO_RL_OWNER_NEW", "10/hour")
 RATE_OWNER_ACT = _env("RESTO_RL_OWNER_ACT", "120/minute")
 RATE_BROWSE = _env("RESTO_RL_BROWSE", "120/minute")
+RATE_QUOTE = _env("RESTO_RL_QUOTE", "60/minute;600/hour")          # C2 : devis de panier (public)
+RATE_CHECKOUT = _env("RESTO_RL_CHECKOUT", "5/minute;30/hour")      # C2 : validation de commande
+CART_MAX_VENDORS = int(_env_num("RESTO_CART_MAX_VENDORS", 8))
+CART_MAX_LINES = int(_env_num("RESTO_CART_MAX_LINES", 60))
+CART_MAX_QTY = int(_env_num("RESTO_CART_MAX_QTY", 50))
+ORDER_MAX_ACTIVE = int(_env_num("RESTO_ORDER_MAX_ACTIVE", 20))     # commandes « en attente » simultanées par client
 
 UPLOAD_MAX_BYTES = int(_env_num("RESTO_UPLOAD_MAX_MB", 5) * 1024 * 1024)
 UPLOAD_MAX_SIDE = int(_env_num("RESTO_UPLOAD_MAX_SIDE", 6000))
