@@ -13,7 +13,7 @@ from app.models import User
 from app.restaurant import limits as L, services as svc
 from app.restaurant.limits import limiter
 from app.restaurant.models import (
-    BLOCKING_STATUSES, CUISINES, SELLER_TYPES, DiningTable, Reservation, Restaurant, RestaurantReview,
+    BLOCKING_STATUSES, CUISINES, SELLER_TYPES, DiningTable, MenuCategory, MenuItem, Reservation, Restaurant, RestaurantReview,
 )
 
 router = APIRouter(prefix="/api/v1/restaurant", tags=["restaurant"])
@@ -51,6 +51,54 @@ def home(session: Session = Depends(get_session)):
             if k in CUISINES:
                 cuisines[k] = cuisines.get(k, 0) + 1
     return {"featured": [svc.card(session, r) for r in live], "cities": [{"city": c, "count": int(n)} for c, n in cities], "cuisines": [{"key": k, "count": n} for k, n in sorted(cuisines.items(), key=lambda kv: -kv[1])], "total": int(total)}
+
+
+@router.get("/dishes")
+@limiter.limit(lambda: L.RATE_BROWSE)
+def dishes(
+    request: Request,
+    q: Optional[str] = Query(default=None, max_length=80), city: Optional[str] = Query(default=None, max_length=80), category: Optional[str] = Query(default=None, max_length=80),
+    restaurant_id: Optional[int] = None, delivery: bool = False, session: Session = Depends(get_session),
+):
+    """Catalogue public de TOUS les plats disponibles des fiches en ligne (page « Une petite faim ? ») + les fiches pour la carte.
+    Jamais de plat indisponible, de fiche non publiée ni de coordonnées privées du vendeur. Plafonné (DISHES_CAP) : `truncated` le signale."""
+    rs = session.exec(_live()).all()
+    if city:
+        rs = [r for r in rs if (r.city or "").strip().lower() == city.strip().lower()]
+    if delivery:
+        rs = [r for r in rs if r.offers_delivery]
+    if restaurant_id:
+        rs = [r for r in rs if r.id == restaurant_id]
+    by_id = {r.id: r for r in rs}
+    if not by_id:
+        return {"restaurants": [], "dishes": [], "categories": [], "cities": [], "total": 0, "truncated": False}
+    cats = {c.id: c.name for c in session.exec(select(MenuCategory).where(MenuCategory.restaurant_id.in_(list(by_id)))).all()}
+    items = session.exec(select(MenuItem).where(MenuItem.restaurant_id.in_(list(by_id)), MenuItem.is_available == True).order_by(MenuItem.sort_order, MenuItem.id)).all()  # noqa: E712
+    needle = (q or "").strip().lower()
+    rows = []
+    for i in items:
+        cat = cats.get(i.category_id, "") if i.category_id else ""
+        r = by_id[i.restaurant_id]
+        if category and cat.lower() != category.strip().lower():
+            continue
+        if needle and needle not in f"{i.name} {i.description} {i.tags} {cat} {r.name}".lower():
+            continue
+        rows.append({"id": i.id, "name": i.name, "description": i.description, "price": i.price, "image": i.image_path, "tags": [t for t in i.tags.split(",") if t], "category": cat, "restaurant_id": r.id})
+    rows.sort(key=lambda d: (d["category"].lower() or "~", by_id[d["restaurant_id"]].name.lower(), d["id"]))
+    total, truncated = len(rows), len(rows) > L.DISHES_CAP
+    rows = rows[: L.DISHES_CAP]
+    used = {d["restaurant_id"] for d in rows}
+    counts: dict[int, int] = {}
+    for d in rows:
+        counts[d["restaurant_id"]] = counts.get(d["restaurant_id"], 0) + 1
+    out_r = []
+    for r in sorted((by_id[i] for i in used), key=lambda x: (-int(bool(x.is_featured)), x.name.lower())):
+        c = svc.card(session, r)
+        out_r.append({"id": r.id, "slug": r.slug, "name": r.name, "city": r.city, "area": r.area, "image": c["image"], "rating_avg": r.rating_avg, "rating_count": r.rating_count,
+                      "seller_type": c["seller_type"], "offers_delivery": c["offers_delivery"], "delivery_fee": r.delivery_fee, "lat": r.latitude, "lng": r.longitude, "dish_count": counts.get(r.id, 0)})
+    all_cats = sorted({d["category"] for d in rows if d["category"]}, key=str.lower)
+    cities = sorted({r["city"] for r in out_r if r["city"]}, key=str.lower)
+    return {"restaurants": out_r, "dishes": rows, "categories": all_cats, "cities": cities, "total": total, "truncated": truncated}
 
 
 @router.get("/search")
