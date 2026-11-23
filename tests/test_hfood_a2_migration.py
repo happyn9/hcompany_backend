@@ -156,6 +156,8 @@ def test_upgrade_downgrade_upgrade_and_chain(db):
     with db.engine.connect() as cx:
         assert cx.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == A2
     heads = {ln.split()[0] for ln in db.alembic("heads").stdout.splitlines() if "(head)" in ln}
-    assert A2 in heads and A1 not in heads  # A2 prolonge A1.1 sans créer de nouvelle branche
+    assert A1 not in heads and A2 not in heads  # A2 prolonge A1.1 ; la tête est désormais C2 (`f1c2a0b1d2e3`) sans nouvelle branche
+    hist2 = db.alembic("history", "-r", f"{A2}:heads").stdout
+    assert "f1c2a0b1d2e3" in hist2
     hist = db.alembic("history", "-r", f"{A1}:{A2}").stdout
     assert A2 in hist

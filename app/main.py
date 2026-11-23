@@ -28,7 +28,7 @@ from app.shopping.services import seed_shopping
 from app.transport.routers import admin as transport_admin, operator as transport_operator, public as transport_public
 from app.transport import cargo as transport_cargo
 from app import agents as agents_module
-from app.restaurant.routers import admin as restaurant_admin, owner as restaurant_owner, public as restaurant_public
+from app.restaurant.routers import admin as restaurant_admin, orders as restaurant_orders, owner as restaurant_owner, public as restaurant_public
 from app.tourism.routers import admin as tourism_admin, owner as tourism_owner, public as tourism_public
 from app.crossborder.routers import admin as geo_admin, public as geo_public
 from app.partnerhub import routers as partnerhub
@@ -246,6 +246,7 @@ app.include_router(lodging_guest.router)
 app.include_router(lodging_host.router)
 app.include_router(lodging_admin.router)
 app.include_router(restaurant_public.router)
+app.include_router(restaurant_orders.router)
 app.include_router(restaurant_owner.router)
 app.include_router(restaurant_admin.router)
 app.include_router(admin_security.router)

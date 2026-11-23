@@ -433,7 +433,7 @@ def test_rerun_is_a_noop_and_single_head(clean):
     heads = {ln.split()[0] for ln in clean.alembic("heads").stdout.splitlines() if "(head)" in ln}
     # A2 (parent A1.1) remplace A1.1 comme tête de SA branche et n'en crée aucune nouvelle. Le seul autre sommet toléré est
     # `a1d5c8e2f4b7` : il préexiste dans cet instantané du dépôt (la migration de fusion `b0e1f2a3c4d5` y est adaptée).
-    assert A2_HEAD in heads and HEAD not in heads and heads - {A2_HEAD} <= {"a1d5c8e2f4b7"}
+    assert HEAD not in heads and A2_HEAD not in heads and len(heads - {"a1d5c8e2f4b7"}) == 1  # tête actuelle (A2 puis C2…) : une seule hors branche historique a1d5…
 
 
 # ───────────────────── PostgreSQL uniquement ─────────────────────
