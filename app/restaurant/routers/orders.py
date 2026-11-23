@@ -91,7 +91,7 @@ def checkout(request: Request, payload: CheckoutIn, idempotency_key: Optional[st
             r = session.get(Restaurant, s.restaurant_id)
             owner = session.get(User, r.owner_id) if r else None
             svc.notify(session, r.owner_id if r else None, "Nouvelle commande", f"{order.contact_name} · {s.items_total:g} {order.currency} · {'livraison' if s.fulfilment == 'delivery' else 'retrait'} ({s.code}).", owner.email if owner else None)
-        svc.notify(session, user.id, "Commande envoyée", f"{len(subs)} vendeur(s) ont reçu votre commande. Code {order.code}. Le paiement se fait directement avec chaque vendeur.")
+        svc.notify(session, user.id, "Commande envoyée", f"{len(subs)} vendeur(s) ont reçu votre commande. Code {order.code}. Le paiement se fait directement avec chaque vendeur.", email=user.email)
         session.commit()
     except IntegrityError:  # deux envois simultanés avec la même clé : le second retombe sur la commande du premier
         session.rollback()
