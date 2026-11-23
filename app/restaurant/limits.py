@@ -112,3 +112,6 @@ def _build_limiter() -> Limiter:
 
 
 limiter = _build_limiter()
+
+# Catalogue public des plats (page « Une petite faim ? ») : plafond de lignes renvoyées par requête
+DISHES_CAP = int(os.getenv("HFOOD_DISHES_CAP", "300"))
