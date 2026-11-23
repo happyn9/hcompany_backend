@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import secrets
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -217,7 +218,8 @@ def notify(session: Session, user_id: Optional[int], title: str, body: str, emai
         if user_id:
             create_in_app_notification(session, user_id, title, body)
         if email:
-            send_email(email, f"H-Restaurant — {title}", f"{body}\n\n— H-Restaurant, par H-Company")
+            # e-mail en arrière-plan : un serveur SMTP lent ou en panne ne doit jamais ralentir ni casser la commande
+            threading.Thread(target=send_email, args=(email, f"H-Restaurant — {title}", f"{body}\n\n— H-Restaurant, par H-Company"), daemon=True).start()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Notification H-Restaurant non envoyée : %s", exc)
 

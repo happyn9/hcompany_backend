@@ -36,20 +36,43 @@ def send_email(to: str, subject: str, body: str, *, html: str | None = None, lan
     msg["From"] = settings.smtp_from
     msg["To"] = to
 
+    last: Exception | None = None
+    # 1re tentative : négociation normale ; 2e tentative (nouvelle connexion) si le serveur coupe pendant AUTH.
+    # Cause fréquente de « Connection unexpectedly closed » : smtplib essaie d'abord CRAM-MD5, que plusieurs fournisseurs
+    # (Brevo, Zoho, Mailgun…) ferment brutalement au lieu de refuser. On n'annonce alors que PLAIN/LOGIN (sûrs sous TLS).
+    for attempt in (1, 2):
+        try:
+            _deliver(to, msg, plain_auth_only=attempt == 2)
+            return
+        except smtplib.SMTPAuthenticationError:
+            logger.error("SMTP : identifiants refusés par %s:%s (vérifiez SMTP_USER / SMTP_PASSWORD — mot de passe d'application ?)", settings.smtp_host, settings.smtp_port)
+            return  # inutile de réessayer : le mot de passe est faux
+        except (smtplib.SMTPException, OSError) as exc:
+            last = exc
+            logger.warning("SMTP tentative %d échouée vers %s:%s (%s: %s)", attempt, settings.smtp_host, settings.smtp_port, type(exc).__name__, exc)
+    # Une notification qui échoue ne doit jamais faire échouer la requête dont le travail (DB) est déjà commité.
+    logger.error("Échec d'envoi d'e-mail à %s (sujet: %s) : %s. Hôte %s:%s — si l'hébergeur bloque les ports SMTP sortants, utilisez le port 2525/465 ou un service e-mail par API.", to, subject, last, settings.smtp_host, settings.smtp_port)
+
+
+def _deliver(to: str, msg, *, plain_auth_only: bool) -> None:
+    """Une connexion SMTP complète. Port 465 = TLS implicite ; sinon STARTTLS dès que le serveur l'annonce. Timeout impératif (10 s)."""
+    port = int(settings.smtp_port)
+    server = smtplib.SMTP_SSL(settings.smtp_host, port, timeout=10) if port == 465 else smtplib.SMTP(settings.smtp_host, port, timeout=10)
     try:
-        # timeout impératif : sans lui, un serveur SMTP injoignable ou lent
-        # bloque le thread indéfiniment. Les appelants font ceci après avoir
-        # committé leur transaction DB, mais un blocage ici reste un thread
-        # gaspillé — mieux vaut échouer vite.
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+        server.ehlo()
+        if port != 465 and server.has_extn("starttls"):
             server.starttls()
-            if settings.smtp_user:
-                server.login(settings.smtp_user, settings.smtp_password or "")
-            server.sendmail(settings.smtp_from, [to], msg.as_string())
-    except (smtplib.SMTPException, OSError):
-        # Une notification qui échoue ne doit jamais faire échouer la requête
-        # dont le travail (DB) est déjà commité — on journalise et on continue.
-        logger.exception("Échec d'envoi d'e-mail à %s (sujet: %s)", to, subject)
+            server.ehlo()  # les capacités (dont AUTH) changent après STARTTLS
+        if settings.smtp_user:
+            if plain_auth_only and "auth" in server.esmtp_features:
+                server.esmtp_features["auth"] = " ".join(m for m in server.esmtp_features["auth"].split() if m.upper() in ("PLAIN", "LOGIN")) or "PLAIN LOGIN"
+            server.login(settings.smtp_user, settings.smtp_password or "")
+        server.sendmail(settings.smtp_from, [to], msg.as_string())
+    finally:
+        try:
+            server.quit()
+        except (smtplib.SMTPException, OSError):
+            server.close()
 
 
 def send_whatsapp(to_phone: str, body: str) -> None:
