@@ -110,7 +110,9 @@ def setup_order(w, who="g1", owner="owner", qty=(3, 2), price=10.0):
     rid, i1 = live_as(w, owner, f"V{key()}", price=price)
     d2 = w.post(f"{API}/owner/restaurants/{rid}/items", json={"name": "Second", "price": 5}, headers=H(w, owner))
     assert d2.status_code == 201, d2.text
-    i2 = d2.json()["id"]
+    with Session(engine) as ses:  # l'API renvoie la fiche vendeur : on lit les ids de plats en base
+        ids = [m.id for m in ses.exec(select(MenuItem).where(MenuItem.restaurant_id == rid).order_by(MenuItem.id)).all()]
+    i1, i2 = ids[0], ids[1]
     v = {"restaurant_id": rid, "fulfilment": "pickup", "lines": [{"item_id": i1, "qty": qty[0]}, {"item_id": i2, "qty": qty[1]}]}
     r = checkout(w, who, [v])
     assert r.status_code == 201, r.text
@@ -264,8 +266,11 @@ def test_permissions(w):
 
 
 def test_multi_vendor_isolated(w):
-    r1, i1 = live_as(w, "owner", f"MA{key()}", price=10.0)
-    r2, i2 = live_as(w, "other", f"MB{key()}", price=8.0)
+    r1, _ = live_as(w, "owner", f"MA{key()}", price=10.0)
+    r2, _ = live_as(w, "other", f"MB{key()}", price=8.0)
+    with Session(engine) as ses:
+        i1 = ses.exec(select(MenuItem.id).where(MenuItem.restaurant_id == r1)).first()
+        i2 = ses.exec(select(MenuItem.id).where(MenuItem.restaurant_id == r2)).first()
     r = checkout(w, "g1", [vend(r1, i1, 4), vend(r2, i2, 2)])
     assert r.status_code == 201, r.text
     o = r.json()
