@@ -18,7 +18,7 @@ from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.restaurant import limits as L, services as svc
-from app.restaurant.models import FoodOrder, FoodOrderItem, FoodOrderProposal, FoodOrderProposalLine, FoodSubOrder, MenuItem, Restaurant
+from app.restaurant.models import FoodOrder, FoodOrderItem, FoodOrderProposal, FoodOrderProposalLine, FoodOrderReview, FoodSubOrder, MenuItem, Restaurant
 
 BLOCKING = {"vendor_unavailable", "item_not_found", "item_unavailable", "fulfilment_missing", "delivery_unavailable", "address_required", "zone_required", "zone_unsupported"}
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sans 0/O/1/I
@@ -166,6 +166,8 @@ def sub_view(session: Session, s: FoodSubOrder, *, seller: bool = False, order: 
         "note": s.note, "payment_method": s.payment_method, "payment_ref": s.payment_ref, "payment_note": s.payment_note, "status_note": s.status_note, "created_at": s.created_at.isoformat(), "updated_at": s.updated_at.isoformat(), "payment": "manual",
         "items": [{"line_id": i.id, "item_id": i.menu_item_id, "name": i.name, "unit_price": i.unit_price, "qty": i.qty, "line_total": i.line_total} for i in items],
     }
+    rv = session.exec(select(FoodOrderReview).where(FoodOrderReview.sub_order_id == s.id)).first()
+    d["review"] = {"rating": rv.rating, "comment": rv.comment, "created_at": rv.created_at.isoformat(), "hidden": rv.hidden} if rv else None
     d["proposals"] = proposals_view(session, s.id)
     d["open_proposal"] = next((p for p in d["proposals"] if p["status"] == "pending"), None)
     if seller and order is not None:  # le vendeur ne voit que SA sous-commande + le contact nécessaire à la livraison

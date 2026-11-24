@@ -14,7 +14,7 @@ from app.deps import get_current_user
 from app.models import User
 from app.restaurant import limits as L, orders as od, services as svc
 from app.restaurant.limits import limiter
-from app.restaurant.models import SELLER_TRANSITIONS, FoodOrder, FoodSubOrder, Restaurant
+from app.restaurant.models import SELLER_TRANSITIONS, FoodOrder, FoodOrderReview, FoodSubOrder, Restaurant
 
 router = APIRouter(prefix="/api/v1/restaurant", tags=["restaurant-orders"])
 KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{8,64}$")
@@ -390,3 +390,54 @@ def decide_proposal(request: Request, code: str, pid: int, payload: ProposalDeci
     session.commit()
     session.refresh(s)
     return od.sub_view(session, s)
+
+
+# ───────────────────────── E : avis sur commande terminée ─────────────────────────
+
+class OrderReviewIn(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=600)
+
+    @field_validator("comment")
+    @classmethod
+    def _c(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+@router.post("/me/suborders/{code}/review", status_code=201)
+@limiter.limit(lambda: L.RATE_REVIEW)
+def review_suborder(request: Request, code: str, payload: OrderReviewIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Avis du client sur SA sous-commande terminée. Éligibilité vérifiée côté serveur : propriétaire de la commande, statut « completed ». Un seul avis, non modifiable."""
+    s = session.exec(select(FoodSubOrder).where(FoodSubOrder.code == code)).first()
+    o = session.get(FoodOrder, s.order_id) if s else None
+    if not s or not o or o.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Commande introuvable.")
+    if s.status != "completed":
+        raise HTTPException(status_code=409, detail="Vous pouvez donner votre avis une fois la commande terminée.")
+    try:
+        session.add(FoodOrderReview(sub_order_id=s.id, restaurant_id=s.restaurant_id, user_id=user.id, rating=payload.rating, comment=payload.comment))
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Vous avez déjà donné votre avis sur cette commande.")
+    r = session.get(Restaurant, s.restaurant_id)
+    if r:
+        svc.refresh_rating(session, r)
+        svc.notify(session, r.owner_id, "Nouvel avis", f"Un client a laissé {payload.rating}/5 sur la commande {s.code}.", email=_email(session, r.owner_id))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s)
+
+
+@router.get("/seller/reviews")
+def seller_reviews(offset: int = Query(default=0, ge=0), session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Avis reçus par les fiches du vendeur connecté (avis de commande masqués exclus), plus note et nombre par fiche."""
+    rs = session.exec(select(Restaurant).where(Restaurant.owner_id == user.id)).all()
+    ids = [r.id for r in rs]
+    rows = session.exec(select(FoodOrderReview).where(FoodOrderReview.restaurant_id.in_(ids), FoodOrderReview.hidden == False).order_by(FoodOrderReview.id.desc()).offset(offset).limit(30)).all() if ids else []  # noqa: E712
+    names = {r.id: r.name for r in rs}
+    out = []
+    for x in rows:
+        u = session.get(User, x.user_id)
+        out.append({"id": x.id, "restaurant_id": x.restaurant_id, "restaurant_name": names.get(x.restaurant_id, ""), "rating": x.rating, "comment": x.comment, "author": (u.full_name or "Client").split(" ")[0] if u else "Client", "created_at": x.created_at.isoformat()})
+    return {"reviews": out, "restaurants": [{"id": r.id, "name": r.name, "rating_avg": r.rating_avg, "rating_count": r.rating_count} for r in rs]}

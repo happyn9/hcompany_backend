@@ -225,8 +225,12 @@ def notify(session: Session, user_id: Optional[int], title: str, body: str, emai
 
 
 def refresh_rating(session: Session, r: Restaurant) -> None:
-    avg, n = session.exec(select(func.coalesce(func.avg(RestaurantReview.rating), 0), func.count(RestaurantReview.id)).where(RestaurantReview.restaurant_id == r.id)).one()
-    r.rating_avg, r.rating_count = round(float(avg), 2), int(n)
+    """Moyenne et nombre d'avis = avis de réservation + avis de commande NON masqués."""
+    from app.restaurant.models import FoodOrderReview
+    s1, n1 = session.exec(select(func.coalesce(func.sum(RestaurantReview.rating), 0), func.count(RestaurantReview.id)).where(RestaurantReview.restaurant_id == r.id)).one()
+    s2, n2 = session.exec(select(func.coalesce(func.sum(FoodOrderReview.rating), 0), func.count(FoodOrderReview.id)).where(FoodOrderReview.restaurant_id == r.id, FoodOrderReview.hidden == False)).one()  # noqa: E712
+    n = int(n1) + int(n2)
+    r.rating_avg, r.rating_count = (round((float(s1) + float(s2)) / n, 2) if n else 0.0), n
     session.add(r)
 
 
