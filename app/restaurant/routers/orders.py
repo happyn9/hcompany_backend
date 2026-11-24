@@ -132,6 +132,7 @@ def cancel_suborder(request: Request, code: str, session: Session = Depends(get_
     res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.status == "pending").values(status="cancelled", updated_at=datetime.utcnow()))
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Cette commande a déjà reçu une réponse du vendeur : contactez-le directement.")
+    od.cancel_open_proposals(session, s.id, "Commande annulée par le client")
     r = session.get(Restaurant, s.restaurant_id)
     svc.notify(session, r.owner_id if r else None, "Commande annulée", f"Le client a annulé la commande {s.code}.", email=_email(session, r.owner_id if r else None))
     session.commit()
@@ -188,6 +189,8 @@ def seller_decision(request: Request, code: str, payload: DecisionIn, session: S
     res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.status == "pending").values(status=new, decline_reason=payload.reason or None, updated_at=datetime.utcnow()))
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Cette commande n'est plus en attente.")
+    if new == "declined":
+        od.cancel_open_proposals(session, s.id, "Commande refusée")
     msg = f"{s.restaurant_name} a accepté votre commande ({s.code}). Convenez de la livraison et du paiement directement avec le vendeur." if new == "accepted" else f"{s.restaurant_name} ne peut pas honorer votre commande ({s.code}). Motif : {payload.reason}"
     svc.notify(session, o.user_id, "Commande acceptée" if new == "accepted" else "Commande refusée", msg, email=_email(session, o.user_id))
     session.commit()
@@ -218,9 +221,14 @@ def seller_status(request: Request, code: str, payload: StatusIn, session: Sessi
     if payload.status == "cancelled" and not payload.reason:
         raise HTTPException(status_code=422, detail="Indiquez un motif d'annulation : le client le recevra.")
     allowed_from = [cur for cur, nxt in SELLER_TRANSITIONS.items() if payload.status in nxt]
+    od.expire_due(session, s.id)
+    if payload.status in ("ready", "completed") and od.open_proposal(session, s.id):
+        raise HTTPException(status_code=409, detail="Une proposition de modification attend la réponse du client : annulez-la ou attendez sa décision.")
     res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.status.in_(allowed_from)).values(status=payload.status, status_note=payload.reason or None, updated_at=datetime.utcnow()))
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Ce changement de statut n'est pas possible depuis l'état actuel de la commande.")
+    if payload.status == "cancelled":
+        od.cancel_open_proposals(session, s.id, "Commande annulée")
     title, body = _STATUS_MSG[payload.status]
     body = body.format(v=s.restaurant_name, c=s.code) + (f" Motif : {payload.reason}" if payload.reason else "")
     svc.notify(session, o.user_id, title, body, email=_email(session, o.user_id))
@@ -248,6 +256,9 @@ def declare_payment(request: Request, code: str, payload: PayDeclareIn, session:
     o = session.get(FoodOrder, s.order_id) if s else None
     if not s or not o or o.user_id != user.id:
         raise HTTPException(status_code=404, detail="Commande introuvable.")
+    od.expire_due(session, s.id)
+    if od.open_proposal(session, s.id):
+        raise HTTPException(status_code=409, detail="Une modification proposée par le vendeur attend votre réponse : acceptez-la ou refusez-la avant de déclarer un paiement.")
     res = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.payment_status == "unpaid", FoodSubOrder.status.in_(("accepted", "preparing", "ready", "completed"))).values(payment_status="declared", payment_method=payload.method or None, payment_ref=payload.reference or None, payment_note=payload.note or None, updated_at=datetime.utcnow()))
     if res.rowcount != 1:
         raise HTTPException(status_code=409, detail="Le paiement ne peut être déclaré qu'une fois la commande acceptée, et une seule fois.")
@@ -275,6 +286,9 @@ def seller_payment(request: Request, code: str, payload: PayDecisionIn, session:
     s, o = _seller_sub(session, code, user)
     if payload.action == "reject" and not payload.note:
         raise HTTPException(status_code=422, detail="Indiquez pourquoi le paiement n'est pas reçu : le client le verra.")
+    od.expire_due(session, s.id)
+    if payload.action == "confirm" and od.open_proposal(session, s.id):
+        raise HTTPException(status_code=409, detail="Une proposition de modification est en attente : le total n'est pas définitif.")
     if payload.action == "confirm":
         frm, to = ("unpaid", "declared"), "confirmed"  # le vendeur peut aussi confirmer un paiement reçu en main propre sans déclaration préalable
     else:
@@ -287,3 +301,92 @@ def seller_payment(request: Request, code: str, payload: PayDecisionIn, session:
     session.commit()
     session.refresh(s)
     return od.sub_view(session, s, seller=True, order=o)
+
+
+# ───────────────────────── D2 : propositions de modification ─────────────────────────
+
+class ChangeIn(BaseModel):
+    line_id: int = Field(ge=1)
+    qty: int = Field(ge=0, le=10_000)  # 0 = retirer la ligne
+
+
+class ProposalIn(BaseModel):
+    message: str = Field(default="", max_length=400)
+    changes: list[ChangeIn] = Field(min_length=1, max_length=L.CART_MAX_LINES)
+
+    @field_validator("message")
+    @classmethod
+    def _m(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+@router.post("/seller/orders/{code}/proposals", status_code=201)
+@limiter.limit(lambda: L.RATE_OWNER_ACT)
+def seller_propose(request: Request, code: str, payload: ProposalIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Le vendeur propose de réduire/retirer des lignes. Rien n'est modifié tant que le client n'a pas accepté."""
+    s, o = _seller_sub(session, code, user)
+    ids = [c.line_id for c in payload.changes]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=422, detail="Une ligne ne peut apparaître qu'une fois.")
+    p = od.create_proposal(session, s, {c.line_id: c.qty for c in payload.changes}, payload.message)
+    svc.notify(session, o.user_id, "Modification proposée", f"{s.restaurant_name} propose de modifier votre commande {s.code} (nouveau sous-total : {p.items_total_after:g} {o.currency}). Acceptez ou refusez depuis « Mes commandes ».", email=_email(session, o.user_id))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s, seller=True, order=o)
+
+
+@router.post("/seller/orders/{code}/proposals/cancel")
+@limiter.limit(lambda: L.RATE_OWNER_ACT)
+def seller_cancel_proposal(request: Request, code: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    s, o = _seller_sub(session, code, user)
+    res = session.execute(od.sa_update_proposal().where(od.FoodOrderProposal.sub_order_id == s.id, od.FoodOrderProposal.status == "pending").values(status="cancelled", decision_note="Retirée par le vendeur", decided_at=datetime.utcnow()))
+    if res.rowcount != 1:
+        raise HTTPException(status_code=409, detail="Aucune proposition en attente.")
+    svc.notify(session, o.user_id, "Proposition retirée", f"{s.restaurant_name} a retiré sa proposition de modification ({s.code}). Votre commande reste inchangée.", email=_email(session, o.user_id))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s, seller=True, order=o)
+
+
+class ProposalDecisionIn(BaseModel):
+    action: Literal["accept", "decline"]
+    note: str = Field(default="", max_length=300)
+
+    @field_validator("note")
+    @classmethod
+    def _n(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
+@router.post("/me/suborders/{code}/proposals/{pid}/decision")
+@limiter.limit(lambda: L.RATE_CANCEL)
+def decide_proposal(request: Request, code: str, pid: int, payload: ProposalDecisionIn, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Le client accepte (la commande est alors modifiée, totaux recalculés par le serveur) ou refuse (la commande reste inchangée). Décision unique et atomique."""
+    s = session.exec(select(FoodSubOrder).where(FoodSubOrder.code == code)).first()
+    o = session.get(FoodOrder, s.order_id) if s else None
+    p = session.get(od.FoodOrderProposal, pid)
+    if not s or not o or o.user_id != user.id or not p or p.sub_order_id != s.id:
+        raise HTTPException(status_code=404, detail="Proposition introuvable.")
+    od.expire_due(session, s.id)
+    new = "accepted" if payload.action == "accept" else "declined"
+    if new == "accepted":
+        # la commande doit encore être modifiable au moment précis de l'acceptation
+        ok = session.execute(sa_update(FoodSubOrder).where(FoodSubOrder.id == s.id, FoodSubOrder.status.in_(od.PROPOSABLE), FoodSubOrder.payment_status == "unpaid").values(updated_at=datetime.utcnow())).rowcount == 1
+        if not ok:
+            od.cancel_open_proposals(session, s.id, "Commande plus modifiable")
+            session.commit()
+            raise HTTPException(status_code=409, detail="Cette commande ne peut plus être modifiée.")
+    res = session.execute(od.sa_update_proposal().where(od.FoodOrderProposal.id == p.id, od.FoodOrderProposal.status == "pending").values(status=new, decision_note=payload.note or None, decided_at=datetime.utcnow()))
+    if res.rowcount != 1:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Cette proposition n'est plus en attente (déjà traitée, retirée ou expirée).")
+    session.refresh(p)
+    if new == "accepted":
+        session.refresh(s)
+        od.apply_proposal(session, s, o, p)
+    r = session.get(Restaurant, s.restaurant_id)
+    title, body = ("Modification acceptée", f"Le client a accepté la modification de la commande {s.code} (nouveau sous-total : {p.items_total_after:g} {o.currency}).") if new == "accepted" else ("Modification refusée", f"Le client a refusé la modification de la commande {s.code}." + (f" Motif : {payload.note}" if payload.note else "") + " La commande reste inchangée ; contactez-le si besoin.")
+    svc.notify(session, r.owner_id if r else None, title, body, email=_email(session, r.owner_id if r else None))
+    session.commit()
+    session.refresh(s)
+    return od.sub_view(session, s)

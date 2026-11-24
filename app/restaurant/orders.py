@@ -10,13 +10,15 @@ Principes (aucune confiance accordée au client) :
 import hashlib
 import json
 import secrets
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.restaurant import limits as L, services as svc
-from app.restaurant.models import FoodOrder, FoodOrderItem, FoodSubOrder, MenuItem, Restaurant
+from app.restaurant.models import FoodOrder, FoodOrderItem, FoodOrderProposal, FoodOrderProposalLine, FoodSubOrder, MenuItem, Restaurant
 
 BLOCKING = {"vendor_unavailable", "item_not_found", "item_unavailable", "fulfilment_missing", "delivery_unavailable", "address_required", "zone_required", "zone_unsupported"}
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sans 0/O/1/I
@@ -162,8 +164,10 @@ def sub_view(session: Session, s: FoodSubOrder, *, seller: bool = False, order: 
         "fulfilment": s.fulfilment, "delivery_address": s.delivery_address, "delivery_zone": s.delivery_zone, "delivery_fee": s.delivery_fee, "fee_pending": s.fee_pending,
         "delivery_fee_note": s.delivery_fee_note, "delivery_terms": s.delivery_terms, "items_total": s.items_total, "total_known": s.total_known, "decline_reason": s.decline_reason,
         "note": s.note, "payment_method": s.payment_method, "payment_ref": s.payment_ref, "payment_note": s.payment_note, "status_note": s.status_note, "created_at": s.created_at.isoformat(), "updated_at": s.updated_at.isoformat(), "payment": "manual",
-        "items": [{"item_id": i.menu_item_id, "name": i.name, "unit_price": i.unit_price, "qty": i.qty, "line_total": i.line_total} for i in items],
+        "items": [{"line_id": i.id, "item_id": i.menu_item_id, "name": i.name, "unit_price": i.unit_price, "qty": i.qty, "line_total": i.line_total} for i in items],
     }
+    d["proposals"] = proposals_view(session, s.id)
+    d["open_proposal"] = next((p for p in d["proposals"] if p["status"] == "pending"), None)
     if seller and order is not None:  # le vendeur ne voit que SA sous-commande + le contact nécessaire à la livraison
         d["order_code"], d["customer"] = order.code, {"name": order.contact_name, "phone": order.phone}
     return d
@@ -176,3 +180,111 @@ def order_view(session: Session, o: FoodOrder, *, replayed: bool = False) -> dic
         "fees_known_total": o.fees_known_total, "fees_pending": o.fees_pending, "grand_total": o.grand_total, "created_at": o.created_at.isoformat(),
         "suborders": [sub_view(session, s) for s in subs], "replayed": replayed,
     }
+
+
+# ───────────────────────── D2 : propositions de modification ─────────────────────────
+# Règles retenues (périmètre volontairement étroit ; toute extension — hausse de quantité, changement de prix, remplacement d'article, frais — demande une décision métier) :
+#   * le vendeur ne peut que RÉDUIRE une quantité ou RETIRER une ligne (ex. plat épuisé) ; prix unitaires et frais de livraison restent ceux figés à la commande ;
+#   * possible tant que la sous-commande est « pending », « accepted » ou « preparing » ET que le paiement est « unpaid » ;
+#   * une seule proposition en attente par sous-commande (index unique partiel) ; elle expire après PROPOSAL_TTL_HOURS ;
+#   * rien n'est modifié avant l'acceptation du client ; l'acceptation recalcule tous les totaux côté serveur.
+PROPOSABLE = ("pending", "accepted", "preparing")
+
+
+def _expiry_cutoff() -> datetime:
+    return datetime.utcnow()
+
+
+def expire_due(session: Session, sub_id: int) -> None:
+    """Passe en « expired » les propositions échues de cette sous-commande (écriture paresseuse, atomique)."""
+    session.execute(sa_update_proposal().where(FoodOrderProposal.sub_order_id == sub_id, FoodOrderProposal.status == "pending", FoodOrderProposal.expires_at <= _expiry_cutoff()).values(status="expired", decided_at=datetime.utcnow()))
+
+
+def sa_update_proposal():
+    return update(FoodOrderProposal)
+
+
+def open_proposal(session: Session, sub_id: int) -> Optional[FoodOrderProposal]:
+    return session.exec(select(FoodOrderProposal).where(FoodOrderProposal.sub_order_id == sub_id, FoodOrderProposal.status == "pending", FoodOrderProposal.expires_at > _expiry_cutoff())).first()
+
+
+def cancel_open_proposals(session: Session, sub_id: int, note: str) -> None:
+    session.execute(sa_update_proposal().where(FoodOrderProposal.sub_order_id == sub_id, FoodOrderProposal.status == "pending").values(status="cancelled", decision_note=note, decided_at=datetime.utcnow()))
+
+
+def proposals_view(session: Session, sub_id: int) -> list:
+    rows = session.exec(select(FoodOrderProposal).where(FoodOrderProposal.sub_order_id == sub_id).order_by(FoodOrderProposal.id.desc()).limit(20)).all()
+    out = []
+    for p in rows:
+        lines = session.exec(select(FoodOrderProposalLine).where(FoodOrderProposalLine.proposal_id == p.id).order_by(FoodOrderProposalLine.id)).all()
+        st = "expired" if p.status == "pending" and p.expires_at <= _expiry_cutoff() else p.status
+        out.append({
+            "id": p.id, "status": st, "message": p.message, "items_total_before": p.items_total_before, "items_total_after": p.items_total_after, "decision_note": p.decision_note,
+            "created_at": p.created_at.isoformat(), "expires_at": p.expires_at.isoformat(), "decided_at": p.decided_at.isoformat() if p.decided_at else None,
+            "lines": [{"line_id": x.order_item_id, "name": x.name, "unit_price": x.unit_price, "qty_before": x.qty_before, "qty_after": x.qty_after} for x in lines],
+        })
+    return out
+
+
+def create_proposal(session: Session, s: FoodSubOrder, changes: dict[int, int], message: str) -> FoodOrderProposal:
+    """`changes` : {id de ligne de commande → nouvelle quantité (0 = retirer)}. Valide contre les lignes figées ; le serveur calcule les totaux."""
+    if s.status not in PROPOSABLE:
+        raise HTTPException(status_code=409, detail="Cette commande ne peut plus être modifiée.")
+    if s.payment_status != "unpaid":
+        raise HTTPException(status_code=409, detail="Un paiement est déjà déclaré ou confirmé : la commande ne peut plus être modifiée.")
+    expire_due(session, s.id)
+    if open_proposal(session, s.id):
+        raise HTTPException(status_code=409, detail="Une proposition est déjà en attente de réponse du client.")
+    items = {i.id: i for i in session.exec(select(FoodOrderItem).where(FoodOrderItem.sub_order_id == s.id)).all()}
+    if not changes:
+        raise HTTPException(status_code=422, detail="Indiquez au moins une modification.")
+    after_total, lines, changed = 0.0, [], 0
+    for lid, it in items.items():
+        q = changes.get(lid, it.qty)
+        if q > it.qty:
+            raise HTTPException(status_code=422, detail=f"« {it.name} » : vous ne pouvez que réduire la quantité ou retirer l'article.")
+        if q != it.qty:
+            changed += 1
+            lines.append(FoodOrderProposalLine(order_item_id=lid, name=it.name, unit_price=it.unit_price, qty_before=it.qty, qty_after=q))
+        after_total += _money(it.unit_price * q)
+    if set(changes) - set(items):
+        raise HTTPException(status_code=422, detail="Ligne de commande inconnue.")
+    if not changed:
+        raise HTTPException(status_code=422, detail="Aucune quantité n'est différente de la commande actuelle.")
+    if after_total <= 0:
+        raise HTTPException(status_code=422, detail="Retirer tous les articles revient à refuser la commande : utilisez « Refuser ».")
+    p = FoodOrderProposal(sub_order_id=s.id, message=message, items_total_before=s.items_total, items_total_after=_money(after_total), expires_at=datetime.utcnow() + timedelta(hours=L.PROPOSAL_TTL_HOURS))
+    session.add(p)
+    try:
+        session.flush()
+    except Exception:  # index unique partiel : une proposition concurrente vient d'être créée
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Une proposition est déjà en attente de réponse du client.")
+    for ln in lines:
+        ln.proposal_id = p.id
+        session.add(ln)
+    return p
+
+
+def apply_proposal(session: Session, s: FoodSubOrder, o: FoodOrder, p: FoodOrderProposal) -> None:
+    """Applique une proposition ACCEPTÉE aux lignes figées et recalcule sous-commande + commande parent (frais inchangés)."""
+    for ln in session.exec(select(FoodOrderProposalLine).where(FoodOrderProposalLine.proposal_id == p.id)).all():
+        it = session.get(FoodOrderItem, ln.order_item_id)
+        if not it:
+            continue
+        if ln.qty_after == 0:
+            session.delete(it)
+        else:
+            it.qty, it.line_total = ln.qty_after, _money(it.unit_price * ln.qty_after)
+            session.add(it)
+    session.flush()
+    items = session.exec(select(FoodOrderItem).where(FoodOrderItem.sub_order_id == s.id)).all()
+    s.items_total = _money(sum(i.line_total for i in items))
+    s.total_known = _money(s.items_total + (s.delivery_fee or 0.0))
+    s.updated_at = datetime.utcnow()
+    session.add(s)
+    session.flush()
+    subs = session.exec(select(FoodSubOrder).where(FoodSubOrder.order_id == o.id)).all()
+    o.items_total = _money(sum(x.items_total for x in subs))
+    o.grand_total = _money(o.items_total + o.fees_known_total)
+    session.add(o)
