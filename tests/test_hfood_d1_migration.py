@@ -150,5 +150,5 @@ def test_rerun_noop_and_downgrade_keeps_orders(db):
 def test_chain_single_head(db):
     db.ok("upgrade", D1)
     heads = {ln.split()[0] for ln in db.alembic("heads").stdout.splitlines() if "(head)" in ln}
-    D2 = "b5d2c3e4f6a7"  # D2 prolonge D1
-    assert D2 in heads and D1 not in heads and C2 not in heads and heads - {D2} <= {"a1d5c8e2f4b7"}
+    D2, E = "b5d2c3e4f6a7", "c6e3d4f5a7b8"  # D2 prolonge D1, E prolonge D2
+    assert E in heads and D2 not in heads and D1 not in heads and C2 not in heads and heads - {E} <= {"a1d5c8e2f4b7"}
