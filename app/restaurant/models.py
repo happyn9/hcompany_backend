@@ -5,7 +5,7 @@ dans une salle de `room_w` × `room_d` ; il sert au plan 2D de l'éditeur et à 
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 RESTAURANT_STATUSES = ("draft", "pending", "active", "paused", "rejected", "suspended")
@@ -217,3 +217,34 @@ class FoodOrderItem(SQLModel, table=True):
     unit_price: float
     qty: int
     line_total: float
+
+
+PROPOSAL_STATUSES = ("pending", "accepted", "declined", "expired", "cancelled")
+
+
+class FoodOrderProposal(SQLModel, table=True):
+    """D2 : proposition de modification d'UNE sous-commande par son vendeur. Le client accepte ou refuse ; rien n'est modifié avant l'acceptation.
+    Les montants « avant/après » sont calculés par le serveur à partir des lignes figées de la commande."""
+    __tablename__ = "foodorderproposal"
+    __table_args__ = (Index("uq_foodorderproposal_one_pending", "sub_order_id", unique=True, postgresql_where=text("status = 'pending'"), sqlite_where=text("status = 'pending'")),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sub_order_id: int = Field(foreign_key="foodsuborder.id", index=True)
+    status: str = Field(default="pending", index=True)
+    message: str = ""
+    items_total_before: float = 0
+    items_total_after: float = 0
+    decision_note: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime = Field(default_factory=datetime.utcnow)
+    decided_at: Optional[datetime] = None
+
+
+class FoodOrderProposalLine(SQLModel, table=True):
+    __tablename__ = "foodorderproposalline"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    proposal_id: int = Field(foreign_key="foodorderproposal.id", index=True)
+    order_item_id: int = Field(index=True)  # pas de FK : la ligne peut être supprimée à l'acceptation, l'historique reste
+    name: str = ""
+    unit_price: float = 0
+    qty_before: int = 0
+    qty_after: int = 0  # 0 = ligne retirée

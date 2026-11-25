@@ -115,3 +115,6 @@ limiter = _build_limiter()
 
 # Catalogue public des plats (page « Une petite faim ? ») : plafond de lignes renvoyées par requête
 DISHES_CAP = int(os.getenv("HFOOD_DISHES_CAP", "300"))
+
+# D2 : durée de validité d'une proposition de modification (heures) ; au-delà elle est considérée comme expirée.
+PROPOSAL_TTL_HOURS = int(os.getenv("HFOOD_PROPOSAL_TTL_HOURS", "48"))
