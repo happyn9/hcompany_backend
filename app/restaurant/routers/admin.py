@@ -14,7 +14,7 @@ from app.admin_security import require_admin_confirmed
 from app.models import User
 from app.restaurant import services as svc
 from app.restaurant.models import SELLER_TYPES
-from app.restaurant.models import RESTAURANT_STATUSES, DiningTable, MenuItem, Reservation, Restaurant
+from app.restaurant.models import ORDER_STATUSES, RESTAURANT_STATUSES, DiningTable, FoodOrderReview, FoodSubOrder, MenuItem, Reservation, Restaurant
 
 router = APIRouter(prefix="/api/v1/restaurant/admin", tags=["restaurant-admin"])
 
@@ -115,3 +115,46 @@ def feature(rid: int, session: Session = Depends(get_session), _a: User = Depend
     session.add(r)
     session.commit()
     return _row(session, r)
+
+
+# E : supervision des commandes et modération des avis de commande
+
+@router.get("/orders/summary")
+def orders_summary(session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    by_status = {st: int(session.exec(select(func.count(FoodSubOrder.id)).where(FoodSubOrder.status == st, FoodSubOrder.created_at >= cutoff)).one()) for st in ORDER_STATUSES}
+    pay = {p: int(session.exec(select(func.count(FoodSubOrder.id)).where(FoodSubOrder.payment_status == p, FoodSubOrder.created_at >= cutoff)).one()) for p in ("unpaid", "declared", "confirmed")}
+    stale = datetime.utcnow() - timedelta(hours=48)
+    pending_old = int(session.exec(select(func.count(FoodSubOrder.id)).where(FoodSubOrder.status == "pending", FoodSubOrder.created_at <= stale)).one())
+    declared_old = int(session.exec(select(func.count(FoodSubOrder.id)).where(FoodSubOrder.payment_status == "declared", FoodSubOrder.updated_at <= stale)).one())
+    return {"days": 30, "by_status": by_status, "by_payment": pay, "problems": {"pending_over_48h": pending_old, "payment_declared_over_48h": declared_old}}
+
+
+@router.get("/reviews")
+def list_reviews(hidden: Optional[bool] = None, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
+    stmt = select(FoodOrderReview)
+    if hidden is not None:
+        stmt = stmt.where(FoodOrderReview.hidden == hidden)
+    out = []
+    for x in session.exec(stmt.order_by(FoodOrderReview.id.desc()).limit(100)).all():
+        r, u = session.get(Restaurant, x.restaurant_id), session.get(User, x.user_id)
+        out.append({"id": x.id, "restaurant_id": x.restaurant_id, "restaurant_name": r.name if r else "", "rating": x.rating, "comment": x.comment, "author": (u.full_name if u else "") or "", "hidden": x.hidden, "hidden_reason": x.hidden_reason, "created_at": x.created_at.isoformat()})
+    return out
+
+
+@router.post("/reviews/{review_id}/{action}")
+def moderate_review(review_id: int, action: str, p: DecisionIn, session: Session = Depends(get_session), _a: User = Depends(require_admin_confirmed)):
+    if action not in ("hide", "unhide"):
+        raise HTTPException(status_code=404, detail="Action inconnue.")
+    x = session.get(FoodOrderReview, review_id)
+    if not x:
+        raise HTTPException(status_code=404, detail="Avis introuvable.")
+    if action == "hide" and not p.reason.strip():
+        raise HTTPException(status_code=422, detail="Indiquez le motif du masquage.")
+    x.hidden, x.hidden_reason = action == "hide", (p.reason.strip() or None) if action == "hide" else None
+    session.add(x)
+    r = session.get(Restaurant, x.restaurant_id)
+    if r:
+        svc.refresh_rating(session, r)
+    session.commit()
+    return {"id": x.id, "hidden": x.hidden}

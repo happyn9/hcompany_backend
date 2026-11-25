@@ -248,3 +248,18 @@ class FoodOrderProposalLine(SQLModel, table=True):
     unit_price: float = 0
     qty_before: int = 0
     qty_after: int = 0  # 0 = ligne retirée
+
+
+class FoodOrderReview(SQLModel, table=True):
+    """E : avis sur une sous-commande TERMINÉE, par le client qui l'a passée. Un seul avis par sous-commande (unique), non modifiable.
+    `hidden` : modération administrateur (l'avis disparaît de la page publique et de la moyenne ; il reste en base)."""
+    __tablename__ = "foodorderreview"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sub_order_id: int = Field(foreign_key="foodsuborder.id", unique=True)
+    restaurant_id: int = Field(foreign_key="restaurant.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    rating: int
+    comment: str = ""
+    hidden: bool = Field(default=False, index=True)
+    hidden_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -179,11 +179,16 @@ def day_slots(request: Request, rid: int, day: date, party: int = Query(default=
 
 @router.get("/restaurants/{rid}/reviews")
 def reviews(rid: int, offset: int = 0, session: Session = Depends(get_session)):
-    rows = session.exec(select(RestaurantReview).where(RestaurantReview.restaurant_id == rid).order_by(RestaurantReview.created_at.desc()).offset(offset).limit(10)).all()
+    """Avis publics : avis de réservation + avis de commande NON masqués, du plus récent au plus ancien."""
+    from app.restaurant.models import FoodOrderReview
+    offset = max(offset, 0)
+    a = session.exec(select(RestaurantReview).where(RestaurantReview.restaurant_id == rid).order_by(RestaurantReview.created_at.desc()).limit(offset + 10)).all()
+    b = session.exec(select(FoodOrderReview).where(FoodOrderReview.restaurant_id == rid, FoodOrderReview.hidden == False).order_by(FoodOrderReview.created_at.desc()).limit(offset + 10)).all()  # noqa: E712
+    merged = sorted([*a, *b], key=lambda x: x.created_at, reverse=True)[offset:offset + 10]
     out = []
-    for x in rows:
+    for x in merged:
         u = session.get(User, x.user_id)
-        out.append({"id": x.id, "rating": x.rating, "comment": x.comment, "author": (u.full_name or "Client").split(" ")[0] if u else "Client", "created_at": x.created_at.isoformat()})
+        out.append({"id": x.id, "rating": x.rating, "comment": x.comment, "author": (u.full_name or "Client").split(" ")[0] if u else "Client", "created_at": x.created_at.isoformat(), "verified_order": isinstance(x, FoodOrderReview)})
     return out
 
 
