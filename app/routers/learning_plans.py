@@ -6,7 +6,7 @@ formation en présentiel et/ou le contenu exclusif en ligne."""
 import logging
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -47,6 +47,9 @@ from app.services.rate_limit import limiter
 logger = logging.getLogger("hcompany.learning.plans")
 
 router = APIRouter(prefix="/api/v1/learning", tags=["learning-plans"])
+
+# Fenêtre anti-doublon d'un achat identique (double clic / réessai réseau).
+DUPLICATE_WINDOW_SECONDS = 30
 
 # Préfixes nationaux (sans le 0) par opérateur, pour repérer une erreur de
 # saisie avant d'envoyer une demande de paiement au mauvais réseau.
@@ -213,6 +216,22 @@ def checkout(
                 detail=f"Ce numéro n'est pas un numéro {OPERATOR_LABELS[payload.method]}. Choisissez le bon opérateur.",
             )
 
+    # Requête répétée (double clic, nouvel essai réseau) : un achat identique
+    # créé il y a quelques secondes est renvoyé tel quel, sans second débit.
+    recent = session.exec(
+        select(LearningSubscription).where(
+            LearningSubscription.user_id == user.id,
+            LearningSubscription.plan_id == plan.id,
+            LearningSubscription.period == payload.period,
+            LearningSubscription.seats == seats,
+            LearningSubscription.method == payload.method,
+            LearningSubscription.status.in_(("pending", "active")),
+            LearningSubscription.created_at > datetime.utcnow() - timedelta(seconds=DUPLICATE_WINDOW_SECONDS),
+        ).order_by(LearningSubscription.created_at.desc())
+    ).first()
+    if recent:
+        return _sub_read(session, recent, user)
+
     reference = "HL-" + secrets.token_hex(4).upper()
     sub = LearningSubscription(
         reference=reference, user_id=user.id, plan_id=plan.id, plan_code=plan.code, plan_name=plan.name,
@@ -232,6 +251,16 @@ def checkout(
         session.add(sub)
         session.commit()
         raise HTTPException(status_code=402, detail=sub.failure_reason)
+    if result.simulated and settings.is_production:
+        # Aucun fournisseur réel n'a confirmé le paiement : en production on
+        # n'accorde jamais d'accès payant sur une simulation. L'équipe peut
+        # activer le bouquet à la main (POST /admin/subscriptions) après
+        # encaissement.
+        sub.status = "failed"
+        sub.failure_reason = "Le paiement en ligne n'est pas encore disponible. Contactez l'équipe H-Company."
+        session.add(sub)
+        session.commit()
+        raise HTTPException(status_code=503, detail=sub.failure_reason)
 
     _activate(session, sub, simulated=result.simulated, provider_reference=result.provider_reference)
     _notify_activated(user, sub)
