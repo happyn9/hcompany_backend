@@ -219,8 +219,14 @@ def save_progress(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if not session.get(Lesson, lesson_id):
+    lesson = session.get(Lesson, lesson_id)
+    course = session.get(Course, lesson.course_id) if lesson else None
+    # Une leçon non publiée n'existe pas pour l'élève ; une leçon exclusive
+    # exige un bouquet actif (sinon on pourrait « terminer » du contenu verrouillé).
+    if not lesson or not course or not lesson.is_published or not course.is_published:
         raise HTTPException(status_code=404, detail="Leçon introuvable.")
+    if (lesson.members_only or course.members_only) and not has_exclusive_access(session, current_user):
+        raise HTTPException(status_code=403, detail="Cette leçon est réservée aux abonnés d'un bouquet.")
     row = session.exec(
         select(LessonProgress).where(
             LessonProgress.user_id == current_user.id, LessonProgress.lesson_id == lesson_id
@@ -256,6 +262,17 @@ def register_in_person(
     course = session.get(Course, payload.course_id) if payload.course_id else None
     if payload.course_id and not course:
         raise HTTPException(status_code=422, detail="Cours inconnu.")
+
+    # Requêtes répétées : une demande encore ouverte pour la même personne et
+    # le même cours est renvoyée telle quelle, sans doublon ni second e-mail.
+    dup_q = select(TrainingRegistration).where(
+        func.lower(TrainingRegistration.email) == payload.email.lower(),
+        TrainingRegistration.status != RegistrationStatus.closed,
+    )
+    dup_q = dup_q.where(TrainingRegistration.course_id == (course.id if course else None))
+    existing = session.exec(dup_q.order_by(TrainingRegistration.created_at.desc())).first()
+    if existing:
+        return existing
 
     reg = TrainingRegistration(
         user_id=user.id if user else None,
@@ -493,6 +510,15 @@ def admin_delete_course(
     if not course:
         raise HTTPException(status_code=404, detail="Cours introuvable.")
     lesson_ids = [l.id for l in session.exec(select(Lesson).where(Lesson.course_id == course_id)).all()]
+    if lesson_ids and session.exec(
+        select(func.count(LessonProgress.id)).where(LessonProgress.lesson_id.in_(lesson_ids))
+    ).one():
+        # L'historique de progression des élèves n'est jamais effacé :
+        # le cours est archivé (dépublié) au lieu d'être supprimé.
+        course.is_published = False
+        session.add(course)
+        session.commit()
+        return
     if lesson_ids:
         session.exec(delete(LessonProgress).where(LessonProgress.lesson_id.in_(lesson_ids)))
         session.exec(delete(Lesson).where(Lesson.course_id == course_id))
