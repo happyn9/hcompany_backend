@@ -10,12 +10,15 @@ simule une confirmation immédiate (comportement actuel du site), pour que
 le flux complet reste testable de bout en bout sans compte marchand réel.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from app.config import settings
 from app.models import PaymentMethod
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,6 +28,10 @@ class PaymentResult:
     completed_at: Optional[datetime] = None
     failure_reason: Optional[str] = None
     simulated: bool = True
+    # Le fournisseur n'a PAS été contacté (intégration absente) : aucun débit, échec définitif.
+    unavailable: bool = False
+    # Le fournisseur a peut-être été contacté mais l'issue est inconnue (erreur, délai) : NI succès NI refus.
+    uncertain: bool = False
 
 
 def charge(
@@ -36,15 +43,35 @@ def charge(
     """Point d'entrée unique appelé par les routers. `reference` est notre
     référence interne (ex: PAY-XXXXXX), passée au fournisseur comme
     identifiant de la transaction pour la réconciliation."""
-    if method == PaymentMethod.card:
-        return _charge_card(amount, reference)
-    if method == PaymentMethod.airtel_money:
-        return _charge_airtel_money(amount, reference, phone_number)
-    if method == PaymentMethod.mtn_momo:
-        return _charge_mtn_momo(amount, reference, phone_number)
-    if method == PaymentMethod.zamtel_money:
-        return _charge_zamtel_money(amount, reference, phone_number)
-    return PaymentResult(success=False, failure_reason=f"Méthode de paiement non supportée : {method}")
+    try:
+        if method == PaymentMethod.card:
+            return _charge_card(amount, reference)
+        if method == PaymentMethod.airtel_money:
+            return _charge_airtel_money(amount, reference, phone_number)
+        if method == PaymentMethod.mtn_momo:
+            return _charge_mtn_momo(amount, reference, phone_number)
+        if method == PaymentMethod.zamtel_money:
+            return _charge_zamtel_money(amount, reference, phone_number)
+    except Exception:  # noqa: BLE001 — une erreur du fournisseur ne doit JAMAIS devenir un succès ni un 500
+        logger.exception("Erreur de la passerelle de paiement (%s, réf. %s)", method, reference)
+        return PaymentResult(
+            success=False, simulated=False, uncertain=True,
+            failure_reason="Le paiement n'a pas pu être confirmé. Ne payez pas une seconde fois : contactez l'équipe H-Company avec votre référence.",
+        )
+    return PaymentResult(success=False, simulated=False, failure_reason=f"Méthode de paiement non supportée : {method}")
+
+
+def _present(*values) -> bool:
+    """Une clé n'est « renseignée » que si elle contient autre chose que des espaces."""
+    return all(isinstance(v, str) and v.strip() for v in values)
+
+
+def _not_integrated(provider: str) -> PaymentResult:
+    """Clés renseignées mais appel réel pas encore branché : on ne simule JAMAIS un succès et on ne plante pas."""
+    return PaymentResult(
+        success=False, simulated=False, unavailable=True,
+        failure_reason=f"Le paiement par {provider} n'est pas encore disponible. Contactez l'équipe H-Company.",
+    )
 
 
 def _simulate(reference: str) -> PaymentResult:
@@ -52,7 +79,7 @@ def _simulate(reference: str) -> PaymentResult:
 
 
 def _charge_card(amount: float, reference: str) -> PaymentResult:
-    if not settings.stripe_secret_key:
+    if not _present(settings.stripe_secret_key):
         return _simulate(reference)
 
     # --- Intégration réelle Stripe (à activer une fois la clé renseignée) ---
@@ -70,15 +97,11 @@ def _charge_card(amount: float, reference: str) -> PaymentResult:
     #     completed_at=datetime.utcnow(),
     #     simulated=False,
     # )
-    raise NotImplementedError(
-        "Clé Stripe renseignée mais l'appel réel n'est pas encore implémenté — "
-        "décommenter le bloc ci-dessus une fois le package `stripe` installé et "
-        "le compte marchand validé."
-    )
+    return _not_integrated("carte bancaire")
 
 
 def _charge_airtel_money(amount: float, reference: str, phone_number: Optional[str]) -> PaymentResult:
-    if not settings.airtel_money_client_id or not settings.airtel_money_client_secret:
+    if not _present(settings.airtel_money_client_id, settings.airtel_money_client_secret):
         return _simulate(reference)
 
     # --- Intégration réelle Airtel Money (à activer une fois les clés renseignées) ---
@@ -88,15 +111,11 @@ def _charge_airtel_money(amount: float, reference: str, phone_number: Optional[s
     #    le montant et `reference` comme transaction.id, en-tête Authorization
     #    Bearer + X-Country / X-Currency selon la doc Airtel Africa.
     # 3. Vérifier le statut via GET .../standard/v1/payments/{reference}.
-    raise NotImplementedError(
-        "Clés Airtel Money renseignées mais l'appel réel n'est pas encore "
-        "implémenté — voir le plan en commentaire ci-dessus une fois prêt à "
-        "brancher le compte marchand Airtel."
-    )
+    return _not_integrated("Airtel Money")
 
 
 def _charge_mtn_momo(amount: float, reference: str, phone_number: Optional[str]) -> PaymentResult:
-    if not settings.mtn_momo_subscription_key or not settings.mtn_momo_api_key:
+    if not _present(settings.mtn_momo_subscription_key, settings.mtn_momo_api_key):
         return _simulate(reference)
 
     # --- Intégration réelle MTN MoMo (à activer une fois les clés renseignées) ---
@@ -105,22 +124,15 @@ def _charge_mtn_momo(amount: float, reference: str, phone_number: Optional[str])
     # 2. POST {mtn_momo_api_base}/collection/v1_0/requesttopay avec le
     #    téléphone, le montant et `reference` comme X-Reference-Id (UUID).
     # 3. Vérifier le statut via GET .../requesttopay/{X-Reference-Id}.
-    raise NotImplementedError(
-        "Clés MTN MoMo renseignées mais l'appel réel n'est pas encore "
-        "implémenté — voir le plan en commentaire ci-dessus une fois prêt à "
-        "brancher le compte marchand MTN."
-    )
+    return _not_integrated("MTN MoMo")
 
 
 def _charge_zamtel_money(amount: float, reference: str, phone_number: Optional[str]) -> PaymentResult:
-    if not settings.zamtel_money_api_key or not settings.zamtel_money_api_secret:
+    if not _present(settings.zamtel_money_api_key, settings.zamtel_money_api_secret):
         return _simulate(reference)
 
     # --- Intégration réelle Zamtel Money (à écrire avec la doc du compte marchand) ---
     # Même schéma que les autres opérateurs : demande de paiement vers le
     # téléphone avec `reference` comme identifiant de transaction, puis
     # vérification du statut (ou callback) avant de confirmer.
-    raise NotImplementedError(
-        "Clés Zamtel Money renseignées mais l'appel réel n'est pas encore "
-        "implémenté — à brancher avec la documentation du compte marchand."
-    )
+    return _not_integrated("Zamtel Money")

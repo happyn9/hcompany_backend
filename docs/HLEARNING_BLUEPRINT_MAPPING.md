@@ -15,7 +15,7 @@ Statuts : ✅ présent et fonctionnel · 🟡 incomplet · 🔴 défectueux · �
 | Ressources de cours | ⛔ | — | — |
 | Contenu réservé (abonnés) | ✅ | `members_only`, `has_exclusive_access` | `test_learning.py`, `test_learning_p0.py` |
 | Inscription apprenant (Enrollment) | ⛔ | seul `TrainingRegistration` (demande présentiel) | doublons testés |
-| Progression | 🟡 | `LessonProgress` ; sans unicité DB ; contrôle d'accès corrigé | `test_learning_p0.py` |
+| Progression | 🟡 | `LessonProgress` ; unicité `(user_id, lesson_id)` en base (migration `a3c8e5d17b42`, modèle aligné Mission 0.1) ; upsert sûr ; contrôle d'accès corrigé | `test_learning_p0.py`, `test_learning_p01*.py` |
 | Évaluations / quiz | ⛔ | — | — |
 | Certificats | ⛔ | section marketing front uniquement | — |
 | Dashboard apprenant | 🟡 | `MySubscription.jsx`, `/me/progress` ; pas de tableau de bord cours | — |
@@ -55,7 +55,7 @@ Statuts : ✅ présent et fonctionnel · 🟡 incomplet · 🔴 défectueux · �
 | Analytics | — | agrégats SQL sur données réelles (P4) |
 
 Tables à NE PAS créer maintenant : Family, Organization, Certificate, Quiz, Category.
-Migrations réellement nécessaires pour P1 : `enrollment` (nouvelle table, additive), index unique `lessonprogress(user_id, lesson_id)` (après dédoublonnage non destructif : conserver la ligne la plus avancée), `course.instructor_id`/`status` nullable (P4).
+Migrations réellement nécessaires pour P1 : `enrollment` (nouvelle table, additive), `course.instructor_id`/`status` nullable (P4).
 
 ## D. Dépendances entre fonctionnalités
 Enrollment ← Progress, Certificates, Dashboard. Webhooks paiement ← accès payant fiable ← Individual. Organization/Household ← Enrollment (le bénéficiaire reste l'apprenant, pas le payeur). Instructor ← `Course.instructor_id`.
