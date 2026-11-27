@@ -245,6 +245,19 @@ def checkout(
     session.refresh(sub)
 
     result = charge_payment(PaymentMethod(payload.method), amount, reference, phone)
+    if result.uncertain:
+        # Issue inconnue chez le fournisseur : ni succès ni refus. L'abonnement reste « pending » (AUCUN accès),
+        # la demande identique n'est pas rejouée pendant la fenêtre anti-doublon, l'équipe rapproche à la main.
+        sub.failure_reason = result.failure_reason or "Le paiement n'a pas pu être confirmé."
+        session.add(sub)
+        session.commit()
+        raise HTTPException(status_code=503, detail=f"{sub.failure_reason} (réf. {sub.reference})")
+    if result.unavailable:
+        sub.status = "failed"
+        sub.failure_reason = result.failure_reason or "Le paiement en ligne n'est pas encore disponible."
+        session.add(sub)
+        session.commit()
+        raise HTTPException(status_code=503, detail=sub.failure_reason)
     if not result.success:
         sub.status = "failed"
         sub.failure_reason = result.failure_reason or "Le paiement a été refusé."

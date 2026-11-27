@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, delete, func, select
 
 from app.config import settings
@@ -227,21 +228,34 @@ def save_progress(
         raise HTTPException(status_code=404, detail="Leçon introuvable.")
     if (lesson.members_only or course.members_only) and not has_exclusive_access(session, current_user):
         raise HTTPException(status_code=403, detail="Cette leçon est réservée aux abonnés d'un bouquet.")
-    row = session.exec(
-        select(LessonProgress).where(
-            LessonProgress.user_id == current_user.id, LessonProgress.lesson_id == lesson_id
-        )
-    ).first()
-    if not row:
-        row = LessonProgress(user_id=current_user.id, lesson_id=lesson_id)
-    # une leçon terminée le reste, même si la personne revoit le début
-    row.completed = row.completed or payload.completed
-    row.position_seconds = payload.position_seconds
-    row.updated_at = datetime.utcnow()
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return row
+    def _current() -> Optional[LessonProgress]:
+        return session.exec(
+            select(LessonProgress)
+            .where(LessonProgress.user_id == current_user.id, LessonProgress.lesson_id == lesson_id)
+            .order_by(LessonProgress.id)
+        ).first()
+
+    def _apply(row: LessonProgress) -> LessonProgress:
+        # une leçon terminée le reste, même si la personne revoit le début
+        row.completed = row.completed or payload.completed
+        row.position_seconds = payload.position_seconds
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row
+
+    row = _current() or LessonProgress(user_id=current_user.id, lesson_id=lesson_id)
+    try:
+        return _apply(row)
+    except IntegrityError:
+        # Deux requêtes simultanées ont tenté de créer la même ligne : l'index unique en a refusé une.
+        # On relit la ligne gagnante et on y applique notre mise à jour (jamais de doublon, jamais de perte).
+        session.rollback()
+        existing = _current()
+        if existing is None:
+            raise
+        return _apply(existing)
 
 
 # --------------------------------------------------------------------------

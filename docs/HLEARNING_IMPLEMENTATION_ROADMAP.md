@@ -11,7 +11,7 @@ Branche `hlearning-p0-audit` (depuis `main`). PR ouverte vers `main`, **jamais f
 5. Tests de régression : `tests/test_learning_p0.py` (8 tests).
 
 ## P0 — Reste à faire (avant P1)
-- Index unique `lessonprogress(user_id, lesson_id)` avec migration additive/ré-exécutable (`alembic/_safe.py`), dédoublonnage non destructif, essai sur PG jetable.
+- ~~Index unique `lessonprogress`~~ : **fait en Mission 0.1** (la contrainte existait déjà en base via `a3c8e5d17b42` ; modèle aligné, upsert sûr, script de contrôle/réparation, tests PG). Voir `HLEARNING_P0_FINAL_REPORT.md`.
 - Remplacer les `NotImplementedError` des passerelles par une erreur 503 propre quand des clés sont posées sans intégration.
 - Journal d'audit des changements de statut d'abonnement par l'admin.
 - Front : supprimer la clé `learning` dupliquée de `api.js` ; message clair sur le 503 du checkout.

@@ -31,7 +31,7 @@ Référence : `H-Learning_Development_Blueprint_V1.md`. Rien n'a été déployé
 | P3 | Haute | Achats répétés (double clic/réessai) = plusieurs débits et plusieurs abonnements. | **Corrigé** (fenêtre anti-doublon 30 s, sans migration) |
 | P4 | Moyenne | Inscriptions présentiel répétées = doublons + e-mails multiples. | **Corrigé** (demande ouverte identique renvoyée) |
 | P5 | Moyenne | `DELETE /admin/courses/{id}` effaçait la progression des élèves (historique). | **Corrigé** (archivage si progression existante) |
-| P6 | Moyenne | Pas de contrainte unique `(user_id, lesson_id)` sur `LessonProgress` : course possible → doublons. | Ouvert — migration proposée (roadmap) |
+| P6 | Moyenne | ~~Pas de contrainte unique `(user_id, lesson_id)` sur `LessonProgress`~~ **Correction Mission 0.1 :** la contrainte `uq_lessonprogress_user_lesson` existe déjà dans la migration d'origine `a3c8e5d17b42` (les bases issues des migrations l'ont) ; seul le *modèle* ne la déclarait pas (bases créées par `create_all`, tests, risque de dérive Alembic), et `save_progress` ne gérait pas la course (500 sur doublon). | Corrigé : contrainte déclarée dans le modèle, upsert sûr en cas de requêtes simultanées, script de contrôle/réparation non destructif (`scripts/lessonprogress_uniqueness.py`) |
 | P7 | Moyenne | Pas de modèle d'inscription (enrollment) apprenant↔cours : « inscription » = formulaire présentiel. Le blueprint exige Enrollment lié à l'apprenant. | Ouvert (P1) |
 | P8 | Moyenne | Aucun rôle Instructor, Family, Business/Organization ; pas de propriété de cours (`Course` sans `instructor_id`/`owner`). | Ouvert (P2–P4) |
 | P9 | Moyenne | Cycle de vie du cours = booléen `is_published` ; pas de Draft/Review/Approved. | Ouvert (P4) |

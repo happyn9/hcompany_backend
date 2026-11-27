@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import SQLModel, Field
 
 
@@ -313,6 +314,9 @@ class LessonProgress(SQLModel, table=True):
     completed: bool = Field(default=False)
     position_seconds: int = Field(default=0)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Une seule ligne par (élève, leçon) : garanti par la base, pas seulement par le code (requêtes simultanées).
+    # (déjà créée par la migration a3c8e5d17b42 ; déclarée ici pour que les bases créées depuis les modèles l'aient aussi)
+    __table_args__ = (UniqueConstraint("user_id", "lesson_id", name="uq_lessonprogress_user_lesson"),)
 
 
 class RegistrationStatus(str, Enum):
