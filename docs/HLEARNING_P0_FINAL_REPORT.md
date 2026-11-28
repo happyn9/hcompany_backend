@@ -4,11 +4,16 @@ Branche `hlearning-p0-closure` (backend) et `hlearning-p0-api-dup` (site). Rien 
 aucune migration n'a été jouée sur une base de production, aucun `.env` n'a été lu ni commité, HFood / H-Money / Flutter-Rafiki / variables
 de production non touchés (voir « Périmètre » en fin de document).
 
-## 1. Verdict
+## 1. Verdict (décisions du 27/11/2026 intégrées)
 
-**Les 6 volets de la Mission 0.1 sont réalisés et vérifiés. Le P0 n'est PAS déclaré terminé en totalité** : un point de la feuille de route P0
-reste ouvert — le **journal d'audit des actions admin** — parce qu'il demande une nouvelle table, donc une nouvelle révision Alembic, ce que la
-topologie actuelle des migrations n'autorise pas sans votre décision (§6). Le P1 n'est pas commencé.
+| Sujet | Statut |
+|---|---|
+| **Mission 0.1** | **Terminée** (6 volets réalisés et vérifiés, validée par le propriétaire). |
+| **P0 global** | **Non clôturé** : le journal d'audit admin reste à faire. |
+| **Journal d'audit admin** | **Reporté en P1**. Aucune implémentation, aucune migration. Besoin documenté : `docs/HLEARNING_ADMIN_AUDIT_LOG_SPEC.md`. |
+| **Paiements simulés des autres services** (Shopping, Transport y compris Colis, Logement, Partenaires) | **Blocage obligatoire avant leur lancement commercial respectif.** Services non modifiés. Matrice de risques et correctifs : `docs/PAYMENTS_SIMULATION_RISK_MATRIX.md`. Règle définitive : **aucun paiement simulé ne peut accorder un service payant en production.** |
+| **Déploiement / fusion** | **Aucun déploiement, aucune fusion.** PR backend #12 et site #26 ouvertes. |
+| **P1** | **Non commencé.** Aucun autre développement sans validation. |
 
 ## 2. Problèmes trouvés
 
@@ -55,9 +60,9 @@ Environnement : Python 3.13, PostgreSQL 16 jetable local (`127.0.0.1:54331`, bas
 
 ## 6. Risques résiduels et décisions attendues
 
-1. **Journal d'audit admin (reste du P0 de la feuille de route).** Non réalisé : nouvelle table donc nouvelle révision. Décision à prendre : (a) autoriser une révision de fusion des deux têtes + adaptation du test de topologie HFood, ou (b) reclasser le journal en P1. Je ne touche pas à HFood sans accord.
+1. **Journal d'audit admin — DÉCIDÉ : reporté en P1** (nouvelle table donc nouvelle révision Alembic). Pas de fusion des deux têtes pour l'instant, ni de modification des migrations ou des tests HFood. Spécification : `docs/HLEARNING_ADMIN_AUDIT_LOG_SPEC.md`. Tant qu'il n'est pas livré, le P0 global n'est pas clôturé.
 2. **Deux têtes Alembic.** `entrypoint.sh` joue `upgrade heads`, donc le déploiement fonctionne, mais `alembic upgrade head` (au singulier) échouerait.
-3. **Paiement simulé en production hors H-Learning.** Shopping, Transport, Logement et Partenaires marquent encore « payé » (avec `simulated=true`) quand aucune clé n'existe, même en production : la garde n'existe que pour H-Learning. Non modifié (hors périmètre) ; à traiter avant tout lancement réel. Effet de bord de G1 : avec des clés renseignées, ces modules reçoivent désormais un échec propre au lieu d'un 500.
+3. **Paiement simulé en production hors H-Learning — DÉCIDÉ : blocage obligatoire avant lancement commercial** de Shopping, Transport (Billets et Colis), Logement et Partenaires. Ils marquent encore « payé » quand aucune clé n'existe, même en production (la garde n'existe que pour H-Learning) ; Colis et Partenaires ne conservent même pas l'indicateur `simulated`. Non modifié dans cette mission ; correctifs listés dans `docs/PAYMENTS_SIMULATION_RISK_MATRIX.md` (mission dédiée). Effet de bord de G1 : avec des clés renseignées, ces modules reçoivent désormais un échec propre au lieu d'un 500.
 4. **Aucun fournisseur réel branché** : carte, Airtel, MTN, Zamtel renvoient « indisponible » dès que les clés existent. Webhooks signés et idempotents, rapprochement des paiements `pending` incertains : P1.
 5. **Course sur `register_in_person` et le checkout** : protégés par la fenêtre anti-doublon de 30 s et un contrôle applicatif, pas par une contrainte en base (comme la progression).
 6. **Tests de concurrence SQLite** : la sérialisation d'écriture de SQLite réduit leur portée ; la preuve de référence est celle de PostgreSQL.
